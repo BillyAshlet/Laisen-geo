@@ -6,7 +6,7 @@
 <title>城市空间规划情景模拟</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 <!-- Dark bars top and bottom frame the light working area. -->
@@ -53,13 +53,24 @@
   <section id="av" class="av hidden">
     <header class="avhead"><span id="avTitle"></span><button class="block" id="avClose"></button></header>
     <div class="avbody">
-      <figure class="neatline avmap"><canvas id="avMap" width="720" height="720"></canvas><figcaption id="avCap"></figcaption></figure>
+      <div class="avgrid">
+        <figure class="neatline" id="avf-lst"><canvas id="av-lst" width="440" height="440"></canvas><figcaption></figcaption></figure>
+        <figure class="neatline" id="avf-flood"><canvas id="av-flood" width="440" height="440"></canvas><figcaption></figcaption></figure>
+        <figure class="neatline" id="avf-commute"><canvas id="av-commute" width="440" height="440"></canvas><figcaption></figcaption></figure>
+        <figure class="neatline" id="avf-density"><canvas id="av-density" width="440" height="440"></canvas><figcaption></figcaption></figure>
+      </div>
       <div class="avside">
         <ol id="avSteps"></ol>
         <figure class="neatline avsc"><canvas id="avScatter" width="560" height="190"></canvas><figcaption id="avScCap"></figcaption></figure>
         <div id="avCards"></div>
       </div>
     </div>
+  </section>
+  <!-- Change view: after applying a suggestion, what changed and where (after − before). -->
+  <section id="cv" class="av hidden">
+    <header class="avhead"><span id="cvTitle"></span><button class="block ochre" id="cvBack"></button></header>
+    <div id="cvSummary" class="cvsum"></div>
+    <div class="cvgrid" id="cvGrid"></div>
   </section>
 </main>
 
@@ -74,11 +85,11 @@
   </div>
 </footer>
 
-<script src="i18n.js?v=7"></script>
-<script src="palette.js?v=7"></script>
-<script src="data/changchun.js?v=7"></script>
-<script src="engine.js?v=7"></script>
-<script src="agent.js?v=7"></script>
-<script src="ui.js?v=7"></script>
+<script src="i18n.js?v=9"></script>
+<script src="palette.js?v=9"></script>
+<script src="data/changchun.js?v=9"></script>
+<script src="engine.js?v=9"></script>
+<script src="agent.js?v=9"></script>
+<script src="ui.js?v=9"></script>
 </body>
 </html>

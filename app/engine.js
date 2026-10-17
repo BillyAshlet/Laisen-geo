@@ -446,7 +446,7 @@ function evaluate(w) {
   };
 
   // Hansen accessibility to jobs; mean commute from gravity shares.
-  const acc = new Float32Array(B), workers = new Float32Array(B), commuteB = new Float32Array(B);
+  const acc = new Float32Array(B), workers = new Float32Array(B), commuteB = new Float32Array(B), flows = [];
   let commuteSum = 0, popSum = 0;
   for (let i = 0; i < B; i++) {
     let A = 0, tw = 0, L = 0;
@@ -456,6 +456,13 @@ function evaluate(w) {
       A += jobs[j] * g; tw += jobs[j] * g * t; L += pop[j] * g;
     }
     acc[i] = A; workers[i] = L; commuteB[i] = A > 0 ? tw / A : 60;
+    // Commuting flows (gravity shares) for the flow-line map.
+    if (pop[i] > 0 && A > 0) for (let j = 0; j < B; j++) {
+      if (j === i || !jobs[j]) continue;
+      const t = tt(i, j); if (!isFinite(t)) continue;
+      const v = pop[i] * jobs[j] * Math.exp(-t / BETA) / A;
+      if (v > 1) flows.push([i, j, v]);
+    }
     if (pop[i] > 0 && A > 0) { commuteSum += pop[i] * tw / A; popSum += pop[i]; }
   }
   // Heat comes after travel: a spread-out city drives more, and its roads run hotter.
@@ -537,6 +544,7 @@ function evaluate(w) {
     flood: fl.map(v => Math.min(1, Math.sqrt(v / 40))),
     thru, caught,
     commute: commuteCell, density: densCell, commuteB,
+    flows: flows.sort((p, q) => q[2] - p[2]).slice(0, 90),
     impact: impact.map(v => Math.min(1, v / 2)),
   };
 }

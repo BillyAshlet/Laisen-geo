@@ -133,7 +133,7 @@ figcaption {
 
 /* ---------- Footer: trade-off · readouts · agent log ---------- */
 .term {
-  display: grid; grid-template-columns: auto 300px minmax(0, 1fr); gap: 16px;
+  display: grid; grid-template-columns: auto 380px minmax(0, 1fr); gap: 16px;
   height: 150px; padding: 12px 16px; font: 12px/1.6 var(--mono);
 }
 .trade { border-color: var(--on-dark); }
@@ -141,9 +141,14 @@ figcaption {
 
 .readouts { display: grid; gap: 2px; align-content: start; }
 .readout {
-  display: grid; grid-template-columns: 1fr 56px 64px; align-items: center; gap: 8px;
+  display: grid; grid-template-columns: 1fr 56px 52px 64px; align-items: center; gap: 8px;
   padding: 2px 8px; background: var(--dark-2); font: 12px/1.5 var(--sans);
 }
+.readout em { font: 12px var(--mono); font-style: normal; text-align: right; }
+.readout.better { animation: flashG 1.4s ease-out; } .readout.better em { color: #A9D6A0; }
+.readout.worse { animation: flashR 1.4s ease-out; } .readout.worse em { color: #F0A58A; }
+@keyframes flashG { from { background: #4E7A4A; } to { background: var(--dark-2); } }
+@keyframes flashR { from { background: #8C3A28; } to { background: var(--dark-2); } }
 .readout b { font: 500 12px var(--mono); text-align: right; color: #fff; }
 .readout canvas { width: 64px; height: 16px; }
 
@@ -181,7 +186,12 @@ figcaption {
 .avhead { display: flex; justify-content: space-between; align-items: center; font: 500 13px var(--mono); letter-spacing: .12em; }
 .avhead span::before { content: "▶ "; color: var(--ochre); }
 .avbody { display: flex; gap: 16px; min-height: 0; flex: 1; }
-.avmap canvas { width: calc(var(--H) - 110px); height: calc(var(--H) - 110px); }
+.avgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: calc(var(--H) - 130px); flex: none; align-content: start; }
+.avgrid canvas { width: 100%; height: auto; aspect-ratio: 1; }
+.avgrid figcaption { height: auto; padding: 3px 8px; font-size: 12px; }
+.avgrid figure { opacity: .45; transition: opacity .3s, border-width .3s; }
+.avgrid figure.now, .avgrid figure.done { opacity: 1; }
+.avgrid figure.now { border-width: 3px; }
 .avside { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
 #avSteps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
 #avSteps li { padding: 8px 10px; background: var(--paper-2); border-left: 4px solid var(--rule); animation: avIn .3s ease-out; }
@@ -208,3 +218,17 @@ figcaption {
 .deltas b { font: 500 12px var(--mono); text-align: right; }
 .deltas i { font: 12px var(--mono); font-style: normal; text-align: right; color: var(--ink-2); }
 .deltas i.up { color: #4E8A4A; } .deltas i.down { color: #B5462A; }
+
+/* ---------- Change view (difference maps) ---------- */
+.cvsum { font-size: 14px; padding: 8px 10px; background: #fff; border-left: 4px solid var(--ochre); }
+.cvgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; min-height: 0; }
+.cvgrid canvas { width: 100%; height: auto; aspect-ratio: 1; }
+.cvgrid figcaption { height: auto; display: grid; gap: 2px; }
+.cvgrid .d { font: 500 13px var(--mono); }
+.cvgrid .d.up { color: #B5462A; } .cvgrid .d.down { color: #2F6E8F; }
+
+/* ---------- On-map change toast ---------- */
+.toast { position: absolute; z-index: 4; display: grid; gap: 1px; padding: 6px 9px; background: rgba(47,45,40,.92);
+  color: #fff; font: 12px var(--mono); pointer-events: none; animation: toast 2.6s ease-out forwards; }
+.toast .good { color: #A9D6A0; } .toast .bad { color: #F0A58A; }
+@keyframes toast { 0% { opacity: 0; transform: translateY(6px); } 10%, 75% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(-8px); } }

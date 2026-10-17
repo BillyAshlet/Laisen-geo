@@ -36,7 +36,9 @@ function diagnose(w, f) {
   const res = [...Array(w.nb).keys()].filter(b => w.use[b] === RES && f.pop[b] > 0);
   const hot = [...res].sort((a, b) => f.blockLst[b] - f.blockLst[a]).slice(0, 3);
   const wet = [...res].sort((a, b) => f.blockFlood[b] - f.blockFlood[a]).slice(0, 3);
-  return { hot, wet };
+  const far = [...res].sort((a, b) => f.commuteB[b] - f.commuteB[a]).slice(0, 3);
+  const dense = [...res].sort((a, b) => f.pop[b] / w.base.blocks[b].cells.length - f.pop[a] / w.base.blocks[a].cells.length).slice(0, 3);
+  return { hot, wet, far, dense };
 }
 
 // hooks: onLine(text, cls, suggestion), onTotal(n), onCand(candidate, accepted)

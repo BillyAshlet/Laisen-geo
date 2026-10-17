@@ -49,7 +49,11 @@ function buildBlockPanel() {
     const hook = (id, key, label, show, fmtV) => {
       const el = $(id);
       el.oninput = () => { world[key][b] = +el.value / 100; world.edited[b] = 1; highlight = new Set(); $(show).textContent = fmtV(el.value); scheduleRender(); };
-      el.onchange = () => log(T().logSlider(b, label, fmtV(el.value)));
+      el.onpointerdown = () => { el._start = fields.read; };
+      el.onchange = () => {
+        log(T().logSlider(b, label, fmtV(el.value)));
+        if (el._start) toast(world.base.blocks[b].cx, world.base.blocks[b].cy, el._start);
+      };
     };
     hook('#gs', 'green', T().greenRatio, '#gv', v => v + '%');
     hook('#ks', 'intensity', T().intensity, '#kv', v => v);
@@ -107,6 +111,51 @@ function drawField(canvas, field, ramp, bands = 8) {
     img.data.set([r, g, b, 255], (py * S + px) * 4);
   }
   ctx.putImageData(img, 0, 0);
+}
+
+// Each thematic layer in its own cartographic form:
+//  LST and ponding → smooth contour bands; commute → pale minutes underlay + flow lines
+//  (home block → job block, width ∝ trips); population → dot density (one dot ≈ DOT people).
+const DOT = 8;
+function drawLayer(canvas, key, f, ramp) {
+  if (key === 'lst' || key === 'flood') { drawField(canvas, f[key], ramp); return; }
+  const S = canvas.width, ctx = canvas.getContext('2d'), c = S / N, B = world.base.blocks;
+  if (key === 'commute') {
+    drawField(canvas, f.commute.map(v => v * 0.55), ramp);           // pale underlay: minutes
+    const vmax = f.flows.length ? f.flows[0][2] : 1;
+    ctx.lineCap = 'round';
+    for (const [i, j, v] of [...f.flows].reverse()) {
+      const a = B[i], b = B[j], mx = (a.cx + b.cx) / 2 - (b.cy - a.cy) * 0.18, my = (a.cy + b.cy) / 2 + (b.cx - a.cx) * 0.18;
+      ctx.strokeStyle = `rgba(23,78,90,${0.25 + 0.6 * v / vmax})`; ctx.lineWidth = Math.max(1, c * 2.2 * Math.sqrt(v / vmax));
+      ctx.beginPath(); ctx.moveTo((a.cx + 0.5) * c, (a.cy + 0.5) * c); ctx.quadraticCurveTo((mx + 0.5) * c, (my + 0.5) * c, (b.cx + 0.5) * c, (b.cy + 0.5) * c); ctx.stroke();
+    }
+    for (const F of world.facilities) if (F.type === 'factory' || F.type === 'station') {      // where the flows go
+      ctx.fillStyle = FAC_COLORS[F.type]; ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(F.x * c, F.y * c, Math.max(3, c * 1.4), 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    }
+    return;
+  }
+  // density: dots on built cells of each block, a fixed hash order so dots stay put as numbers change
+  ctx.fillStyle = '#F6F2EA'; ctx.fillRect(0, 0, S, S);
+  for (let i = 0; i < N * N; i++) {
+    const cv = f.cover[i]; if (cv === C_OUT) continue;
+    ctx.fillStyle = cv === C_WATER ? '#C6DCEE' : '#EEE8DC'; ctx.fillRect((i % N) * c, ((i / N) | 0) * c, c + 0.5, c + 0.5);
+  }
+  ctx.fillStyle = '#5A447F';
+  B.forEach((Bk, b) => {
+    const n = Math.round(f.pop[b] / DOT); if (!n) return;
+    const built = Bk.cells.filter(i => f.cover[i] === C_BUILT);
+    for (let k = 0; k < n && built.length; k++) {
+      const i = built[(k * 7919 + b * 104729) % built.length], jx = hash(i * 3 + k), jy = hash(i * 5 + k * 11);
+      ctx.beginPath(); ctx.arc((i % N + jx) * c, (((i / N) | 0) + jy) * c, Math.max(1.2, c * 0.38), 0, 2 * Math.PI); ctx.fill();
+    }
+  });
+}
+
+// Difference map: after − before on the same fixed scale, blue = went down, red = went up.
+function drawDiff(canvas, before, after, gain = 2.5) {
+  const diff = after.map((v, i) => 0.5 + gain * (v - before[i]));
+  drawField(canvas, diff, 'diverging', 11);
 }
 
 // ---------- Main map ----------
@@ -251,8 +300,17 @@ function drawFacilities(ctx, c) {
 const READ_KEYS = ['lst', 'flood', 'commute', 'output', 'complaints'];
 const fmt = (key, v) => key === 'lst' ? v.toFixed(1) + '°' : key === 'commute' ? v.toFixed(1) + "'" : key === 'complaints' ? String(v) : v.toFixed(key === 'flood' ? 2 : 1);
 function drawReadouts() {
-  $('#readouts').innerHTML = READ_KEYS.map((key, k) =>
-    `<div class="readout"><span>${T().readouts[k]}</span><b>${fmt(key, fields.read[key])}</b><canvas id="sp-${key}" width="128" height="32"></canvas></div>`).join('');
+  // Each readout shows its change since the previous step and flashes green (better) or red (worse).
+  // For every readout here, lower is better except output.
+  const prev = history.length > 1 ? history[history.length - 2] : null;
+  const EPS = { lst: 0.01, flood: 0.005, commute: 0.05, output: 0.05, complaints: 0.5 };
+  $('#readouts').innerHTML = READ_KEYS.map((key, k) => {
+    const dv = prev ? fields.read[key] - prev[key] : 0, moved = Math.abs(dv) >= EPS[key];
+    const better = key === 'output' ? dv > 0 : dv < 0;
+    const cls = moved ? (better ? 'better' : 'worse') : '';
+    const dTxt = moved ? sgn(dv, key === 'complaints' ? 0 : key === 'flood' ? 2 : 1) : '';
+    return `<div class="readout ${cls}"><span>${T().readouts[k]}</span><b>${fmt(key, fields.read[key])}</b><em>${dTxt}</em><canvas id="sp-${key}" width="128" height="32"></canvas></div>`;
+  }).join('');
   READ_KEYS.forEach(key => {
     const cv = $('#sp-' + key), ctx = cv.getContext('2d'), vals = history.map(h => h[key]);
     if (vals.length < 2) return;
@@ -285,6 +343,11 @@ function drawTrade() {
   ctx.clearRect(0, 0, W, H);
   ctx.strokeStyle = '#D9D1C1'; ctx.lineWidth = devicePixelRatio;
   for (const r of [0.33, 0.66, 1]) { ctx.beginPath(); [0, 1, 2, 0].forEach((k, j) => j ? ctx.lineTo(...P(k, r)) : ctx.moveTo(...P(k, r))); ctx.stroke(); }
+  if (history.length > 1) {      // the previous step's shape, dashed, so you can see which way it moved
+    const p = badness(history[history.length - 2]);
+    ctx.strokeStyle = '#B9AE98'; ctx.lineWidth = 1.5 * devicePixelRatio; ctx.setLineDash([4 * devicePixelRatio, 3 * devicePixelRatio]);
+    ctx.beginPath(); [0, 1, 2, 0].forEach((k, j) => j ? ctx.lineTo(...P(k, p[k])) : ctx.moveTo(...P(k, p[k]))); ctx.stroke(); ctx.setLineDash([]);
+  }
   const v = badness(fields.read);
   ctx.fillStyle = 'rgba(133,127,110,.35)'; ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = 2 * devicePixelRatio;
   ctx.beginPath(); [0, 1, 2, 0].forEach((k, j) => j ? ctx.lineTo(...P(k, v[k])) : ctx.moveTo(...P(k, v[k]))); ctx.fill(); ctx.stroke();
@@ -294,6 +357,7 @@ function drawTrade() {
 
 // ---------- Agent log ----------
 function applySuggestion(c) {
+  const before = fields;
   if (c.kind === 'move') {
     const F = world.facilities[c.k]; if (F) { F.x = c.to.x; F.y = c.to.y; }
     log(T().logFacMoved(T().tools[c.type], c.b), 'good');
@@ -301,11 +365,40 @@ function applySuggestion(c) {
     world.facilities.push({ type: c.type, x: c.to.x, y: c.to.y });
     log(T().logFacPlaced(T().tools[c.type], c.b), 'good');
   } else {
-    world[c.key][c.b] = c.to; world.edited[c.b] = 1; selected = c.b;
+    world[c.key][c.b] = c.to; world.edited[c.b] = 1; selected = -1;
     log(T().logApplied, 'good');
   }
   highlight = new Set(); buildBlockPanel(); renderAll();
+  showChangeView(before, fields, c);
 }
+
+// ---------- Change view: four difference maps with the changed place circled ----------
+function showChangeView(before, after, c) {
+  const L = T(), cv = $('#cv');
+  $('#av').classList.add('hidden'); cv.classList.remove('hidden');
+  $('#cvTitle').textContent = L.cv.title; $('#cvBack').textContent = L.cv.back;
+  const d = delta(before.read, after.read);
+  $('#cvSummary').textContent = L.cv.summary(c.text ? (c.text.split(/[：:]/)[1] || '').trim() : '', d);
+  const rows = [
+    ['lst', L.layers[0], sgn(d.lst, 2) + '°', d.lst],
+    ['flood', L.layers[1], sgn(d.flood, 1) + '%', d.flood],
+    ['commute', L.layers[2], sgn(d.commute, 1) + "'", d.commute],
+    ['density', L.layers[3], sgn((after.read.pop / before.read.pop - 1) * 100, 1) + '%', after.read.pop - before.read.pop],
+  ];
+  $('#cvGrid').innerHTML = rows.map(([k, name, txt, v]) => `<figure class="neatline"><canvas id="cv-${k}" width="360" height="360"></canvas>
+    <figcaption><span>${name} · ${L.cv.diff}</span><span class="d ${v > 0 ? 'up' : v < 0 ? 'down' : ''}">${txt}</span>
+    <span class="legend">${L.cv.down}<i style="background:${rampCss('diverging')}"></i>${L.cv.up}</span></figcaption></figure>`).join('');
+  const at = c.kind === 'slider' ? world.base.blocks[c.b] : { cx: c.to.x - 0.5, cy: c.to.y - 0.5, cells: { length: 40 } };
+  for (const [k] of rows) {
+    const canvas = $('#cv-' + k);
+    drawDiff(canvas, before[k], after[k]);
+    const ctx = canvas.getContext('2d'), S = canvas.width / N, r = Math.sqrt(at.cells.length / Math.PI) * S + 12;
+    ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = 3; ctx.setLineDash([8, 5]);
+    ctx.beginPath(); ctx.arc((at.cx + 0.5) * S, (at.cy + 0.5) * S, r, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+$('#cvBack').onclick = () => { $('#cv').classList.add('hidden'); drawMap(); };
+
 function log(msg, cls = '', suggestion = null) {
   const t = new Date().toTimeString().slice(0, 8);
   const li = document.createElement('li'); li.className = cls;
@@ -345,7 +438,7 @@ function drawHighlight() {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function circleBlocks(canvas, blocks, color) {
   const ctx = canvas.getContext('2d'), S = canvas.width / N;
-  ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.font = '600 22px "IBM Plex Mono", monospace';
+  ctx.lineWidth = 3; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.font = '600 16px "IBM Plex Mono", monospace';
   blocks.forEach((b, k) => {
     const B = world.base.blocks[b], r = Math.sqrt(B.cells.length / Math.PI) * S + 10;
     ctx.beginPath(); ctx.arc((B.cx + 0.5) * S, (B.cy + 0.5) * S, r, 0, 2 * Math.PI); ctx.stroke();
@@ -379,40 +472,48 @@ function scatterDot(c, ok, base, big = false) {
   ctx.beginPath(); ctx.arc(x, y, ok ? 3 : 2, 0, 2 * Math.PI); ctx.fill();
 }
 async function openAgentView() {
-  const av = $('#av'); av.classList.remove('hidden');
-  $('#avTitle').textContent = T().av.title; $('#avClose').textContent = T().av.close;
+  const av = $('#av'), L = T(); av.classList.remove('hidden');
+  $('#avTitle').textContent = L.av.title; $('#avClose').textContent = L.av.close;
   $('#avSteps').innerHTML = ''; $('#avCards').innerHTML = ''; $('#avScCap').textContent = '';
-  const big = $('#avMap'), d = diagnose(world, fields);
-  // 1. Perceive
-  drawField(big, fields.lst, 'diverging'); circleBlocks(big, d.hot, '#2F2D28');
-  $('#avCap').textContent = T().layers[0];
-  avStep(T().av.s1 + '  ' + T().agentPerceive(fields.read)); await sleep(1400);
-  // 2. Diagnose
-  drawField(big, fields.flood, 'floodBlue'); circleBlocks(big, d.wet, '#2F2D28');
-  $('#avCap').textContent = T().layers[1];
-  avStep(T().av.s2 + '  ' + T().diag(d.hot, d.wet)); await sleep(1400);
-  // 3. Compute, plotting every option as it is evaluated
-  scatterAxes(); $('#avScCap').textContent = T().av.scatterX + ' · ' + T().av.scatterY;
-  let total = 1, done = 0; const prog = avStep(T().av.s3(0, '…'));
+  const d = diagnose(world, fields);
+  const stages = [
+    ['lst', 0, d.hot, L.av.s1 + '  ' + L.agentPerceive(fields.read)],
+    ['flood', 1, d.wet, L.av.s2],
+    ['commute', 2, d.far, L.av.s2b(d.far)],
+    ['density', 3, d.dense, L.av.s2c(d.dense)],
+  ];
+  // Start with all four maps faint; each stage brings one forward and circles its problem blocks.
+  for (const [key, k] of stages) {
+    drawLayer($('#av-' + key), key, fields, LAYER_RAMPS[k]);
+    const fig = $('#avf-' + key); fig.className = 'neatline'; fig.querySelector('figcaption').textContent = L.layers[k];
+  }
+  for (const [key, k, blocks, text] of stages) {
+    const fig = $('#avf-' + key); fig.classList.add('now');
+    circleBlocks($('#av-' + key), blocks, '#2F2D28');
+    avStep(text); await sleep(1100);
+    fig.classList.remove('now'); fig.classList.add('done');
+  }
+  // Compute, plotting every option as it is evaluated
+  scatterAxes(); $('#avScCap').textContent = L.av.scatterX + ' · ' + L.av.scatterY;
+  let total = 1, done = 0; const prog = avStep(L.av.s3(0, '…'));
   const { picks, base } = await runAgent(world, {
     onLine: log,
     onTotal: n => { total = n; },
-    onCand: (c, ok, b) => { done++; scatterDot(c, ok, b); if (done % 25 === 0) prog.textContent = T().av.s3(done, total); },
+    onCand: (c, ok, b) => { done++; scatterDot(c, ok, b); if (done % 25 === 0) prog.textContent = L.av.s3(done, total); },
   });
-  prog.textContent = T().av.s3(done, done);
-  // 4. Suggest
-  avStep(picks.length ? T().av.s4 : T().av.none);
-  drawField(big, fields.lst, 'diverging');
-  circleBlocks(big, picks.map(p => p.b).filter(b => b >= 0), '#2F2D28');   // ink, not ochre: ochre never goes inside a neatline
-  $('#avCap').textContent = T().layers[0];
+  prog.textContent = L.av.s3(done, done);
+  // Suggest: the chosen places circled on all four maps
+  avStep(picks.length ? L.av.s4 : L.av.none);
+  const where = picks.map(p => p.b).filter(b => b >= 0);
+  for (const [key, k] of stages) { drawLayer($('#av-' + key), key, fields, LAYER_RAMPS[k]); circleBlocks($('#av-' + key), where, '#2F2D28'); }
   picks.forEach((c, k) => {
     scatterDot(c, true, base.read, true);
     const card = document.createElement('div'); card.className = 'card';
-    card.innerHTML = `<span class="n">${k + 1}</span><span>${c.text.replace(T().agentClick, '')}</span><button class="block ochre">${T().av.apply}</button>`;
+    card.innerHTML = `<span class="n">${k + 1}</span><span>${c.text.replace(L.agentClick, '')}</span><button class="block ochre">${L.av.apply}</button>`;
     card.querySelector('button').onclick = () => { av.classList.add('hidden'); applySuggestion(c); };
     $('#avCards').appendChild(card);
   });
-  highlight = new Set(picks.map(p => p.b));
+  highlight = new Set(where);
 }
 $('#avClose').onclick = () => { $('#av').classList.add('hidden'); drawMap(); };
 $('#ask').onclick = async () => {
@@ -428,7 +529,7 @@ function renderAll() {
   lastMs = performance.now() - t0;
   history.push(fields.read); if (history.length > 40) history.shift();
   drawMap();
-  LAYER_KEYS.forEach((key, k) => drawField($('#sm-' + key), k === 0 && revealed ? observedLst() : fields[key], LAYER_RAMPS[k]));
+  LAYER_KEYS.forEach((key, k) => k === 0 && revealed ? drawField($('#sm-lst'), observedLst(), LAYER_RAMPS[0]) : drawLayer($('#sm-' + key), key, fields, LAYER_RAMPS[k]));
   $('#nm-lst').textContent = revealed ? T().layerObserved : T().layers[0];
   $('#nm-lst').closest('figure').classList.toggle('observed', revealed);
   drawReadouts(); drawTrade();
@@ -436,6 +537,19 @@ function renderAll() {
   const short = fields.read.pop < world.popTarget * 0.98;
   if (short && !warnedPop) log(T().logPopShort, 'warn');
   warnedPop = short;
+}
+
+// ---------- On-map change toast: the consequence appears where the action happened ----------
+function toast(x, y, before) {
+  const d = delta(before, fields.read), L = T().popRows, fig = $('.main');
+  const parts = [[L.heat, sgn(d.lst, 2) + '°', d.lst], [L.flood, sgn(d.flood, 1) + '%', d.flood], [L.commute, sgn(d.commute, 1) + '′', d.commute]]
+    .filter(([, , v]) => Math.abs(v) >= 0.01);
+  if (!parts.length) return;
+  const el = document.createElement('div'); el.className = 'toast';
+  el.innerHTML = parts.map(([n, t, v]) => `<span class="${v < 0 ? 'good' : 'bad'}">${n} ${t}</span>`).join('');
+  const W = map.clientWidth;
+  el.style.left = Math.min(W - 180, Math.max(8, x / N * W + 14)) + 'px'; el.style.top = Math.max(8, y / N * W - 36) + 'px';
+  fig.appendChild(el); setTimeout(() => el.remove(), 2600);
 }
 
 // ---------- Map clicks: select a block, or place / remove a facility ----------
@@ -461,7 +575,8 @@ map.addEventListener('pointerdown', e => {
     const b = blockAtPoint(world, x, y);
     world.facilities.push({ type: tool, x, y }); log(T().logFacPlaced(T().tools[tool], b));
   }
-  highlight = new Set(); renderAll(); buildToolbar();
+  const before = fields.read;
+  highlight = new Set(); renderAll(); buildToolbar(); toast(x, y, before);
 });
 
 // ---------- Controls ----------
