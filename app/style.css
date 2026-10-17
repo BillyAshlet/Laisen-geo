@@ -1,0 +1,163 @@
+/* Shell styles. Ochre is UI-only: it never appears inside a neatline,
+   where only data colours live (so it can't be read as "hot"). */
+:root {
+  --paper: #F6F2EA;
+  --paper-2: #EEE8DC;
+  --ink: #2F2D28;
+  --ink-2: #6E685C;
+  --rule: #D9D1C1;
+  --dark: #2F2D28;
+  --dark-2: #45413A;
+  --on-dark: #E9E4D8;
+  --on-dark-2: #A89F8C;
+  --ochre: #B9773C;
+  --neat: #2F2D28;
+  --sans: "Noto Sans SC", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --H: 520px;          /* height of the working area; ui.js sets the real value */
+  /* --M (main map side) is also set by ui.js: as tall as --H allows, as wide as the row allows. */
+  --cap: 50px;         /* small-map caption height */
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+/* The whole app fits one screen: header / working area / footer, no page scroll. */
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font: 14px/1.5 var(--sans);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100vh;
+  overflow: hidden;
+}
+h1 { font-size: 16px; font-weight: 700; margin: 0; letter-spacing: .02em; }
+h2 {
+  font-size: 11px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--ink-2); margin: 14px 0 6px;
+}
+h2:first-child { margin-top: 0; }
+
+/* ---------- Geometric blocks: mid-tone fill, dark text, white on hover ---------- */
+.block {
+  font: 500 13px/1 var(--sans);
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 0;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: color .12s, background .12s, box-shadow .12s;
+}
+.block:hover { color: #fff; background: var(--ink-2); }
+.block.on { box-shadow: inset 0 0 0 2px var(--neat); }
+.block.ochre { background: var(--ochre); color: #fff; }
+.block.ochre:hover { background: var(--on-dark); color: var(--ochre); }
+.seg { display: flex; gap: 2px; }
+.seg .block { flex: 1; }
+
+/* ---------- Dark bars (header + footer) ---------- */
+.dark { background: var(--dark); color: var(--on-dark); }
+.dark .block { background: var(--dark-2); color: var(--on-dark); }
+.dark .block:hover { background: var(--on-dark); color: var(--dark); }
+.dark .block.on { box-shadow: inset 0 0 0 2px var(--on-dark); }
+.dark .block.ochre { background: var(--ochre); color: #fff; }
+.dark .block.ochre:hover { background: var(--on-dark); color: var(--ochre); }
+
+.top { display: flex; align-items: center; gap: 14px; padding: 10px 16px; }
+.title { display: flex; align-items: center; gap: 10px; }
+.mark { width: 14px; height: 14px; background: var(--ochre); }
+.spacer { flex: 1; }
+.top .seg { width: 220px; }
+
+/* ---------- Working area ---------- */
+.layout {
+  display: flex; justify-content: center; gap: 16px;
+  padding: 14px 16px; min-height: 0; overflow: hidden;
+}
+.tools { width: 200px; flex: none; overflow-y: auto; }
+
+.palette { display: grid; gap: 2px; }
+.palette .block {
+  display: flex; align-items: center; gap: 8px; text-align: left; width: 100%;
+  background: var(--c);
+}
+.palette .block:hover { background: var(--c); color: #fff; }
+.palette .glyph { width: 18px; font-family: var(--mono); opacity: .8; }
+/* Water is part of the natural base: shown for the legend, not selectable. */
+.palette .block.locked { cursor: default; background-image: repeating-linear-gradient(135deg, transparent 0 6px, rgba(255,255,255,.18) 6px 8px); }
+.palette .block.locked:hover { color: #fff; }
+
+.constraints { display: grid; gap: 8px; }
+.meter { font-size: 12px; }
+.meter .row { display: flex; justify-content: space-between; }
+.meter .row b { font: 500 12px var(--mono); }
+.meter .bar { height: 5px; background: var(--paper-2); margin-top: 3px; }
+.meter .bar i { display: block; height: 100%; background: var(--ink-2); }
+.meter.ok .bar i { background: #6E9A6A; }
+
+/* ---------- Neatline: every map and chart sits in a dark frame ---------- */
+figure { margin: 0; }
+.neatline { position: relative; border: 1.5px solid var(--neat); background: #fff; }
+.neatline canvas { display: block; }
+figcaption {
+  font-size: 12px; color: var(--ink-2); padding: 5px 8px; height: var(--cap);
+  border-top: 1px solid var(--rule); background: var(--paper);
+}
+
+/* Main map: a square as tall as the working area allows. */
+.mapwrap { flex: none; display: flex; flex-direction: column; align-items: center; }
+.main canvas { width: var(--M, 480px); height: var(--M, 480px); cursor: crosshair; }
+.north {
+  position: absolute; top: 8px; right: 8px; font: 500 11px var(--mono);
+  display: flex; flex-direction: column; align-items: center; line-height: 1;
+  background: rgba(255,255,255,.75); padding: 4px 6px;
+}
+.north span { font-size: 9px; }
+.scale {
+  position: absolute; left: 8px; bottom: 8px; display: flex; align-items: center; gap: 6px;
+  font: 11px var(--mono); background: rgba(255,255,255,.75); padding: 4px 6px;
+}
+.scale span { width: 60px; height: 5px; border: 1px solid var(--ink); border-top: 0;
+  background: linear-gradient(90deg, var(--ink) 50%, #fff 50%); }
+.scale em { font-style: normal; }
+.hint { font-size: 12px; color: var(--ink-2); height: 24px; padding-top: 4px; }
+
+/* Small maps: 2 × 2, each tile sized so two rows fill the working area. */
+.panel { flex: none; }
+.smalls { display: grid; grid-template-columns: auto auto; gap: 10px; }
+.smalls canvas { width: var(--T, 150px); height: var(--T, 150px); }   /* --T set by ui.js */
+.small figcaption { display: grid; gap: 2px; width: 0; min-width: 100%; }
+.small .name { color: var(--ink); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.legend { display: flex; align-items: center; gap: 6px; font: 10px var(--mono); color: var(--ink-2); }
+.legend i { flex: 1; height: 6px; }
+
+/* ---------- Footer: trade-off · readouts · agent log ---------- */
+.term {
+  display: grid; grid-template-columns: auto 300px minmax(0, 1fr); gap: 16px;
+  height: 150px; padding: 12px 16px; font: 12px/1.6 var(--mono);
+}
+.trade { border-color: var(--on-dark); }
+.trade canvas { width: 124px; height: 124px; }
+
+.readouts { display: grid; gap: 2px; align-content: start; }
+.readout {
+  display: grid; grid-template-columns: 1fr 56px 64px; align-items: center; gap: 8px;
+  padding: 2px 8px; background: var(--dark-2); font: 12px/1.5 var(--sans);
+}
+.readout b { font: 500 12px var(--mono); text-align: right; color: #fff; }
+.readout canvas { width: 64px; height: 16px; }
+
+.logwrap { display: flex; flex-direction: column; min-height: 0; }
+.termhead { display: flex; justify-content: space-between; color: var(--on-dark-2); margin-bottom: 2px; gap: 12px; }
+.termhead em { font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#log { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+#log li::before { content: "> "; color: var(--ochre); }
+#log .t { color: #8E8676; margin-right: 8px; }
+#log .warn { color: #E7B07A; }
+#log .good { color: #A9D6A0; }
+/* Revealed tile: a thicker neatline marks observed data, not model output. */
+.small.observed { border-width: 3px; }
+#log .act { cursor: pointer; }
+#log .act:hover { color: #fff; background: var(--dark-2); }
+.ask { width: 100%; margin-top: 16px; padding: 10px 12px; }
+.ask:disabled { opacity: .6; cursor: wait; }
