@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Heat vs Flood Check</title>
+<style>
+  :root { --bg:#111; --fg:#ddd; --mut:#888; }
+  body { background:var(--bg); color:var(--fg); font:13px/1.45 system-ui,sans-serif; margin:16px; }
+  h3 { margin:0 0 4px; }
+  p { color:var(--mut); margin:0 0 10px; max-width:900px; }
+  .ctl { display:flex; gap:20px; flex-wrap:wrap; margin-bottom:12px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  canvas { image-rendering:pixelated; background:#000; display:block; }
+  figure { margin:0; }
+  figcaption { color:var(--mut); margin-top:4px; }
+  table { border-collapse:collapse; margin-top:12px; }
+  td, th { border:1px solid #333; padding:3px 8px; text-align:right; }
+  th { color:var(--mut); font-weight:normal; }
+  .yes { color:#7d7; } .no { color:#e77; }
+</style>
+</head>
+<body>
+<h3>Throwaway check: does green "spread for cooling" conflict with "concentrate for flood"?</h3>
+<p>Same green budget, two placements. α = 0: all green next to homes (heat-first). α = 1: all green on the drainage lines that feed homes (flood-first).
+Conflict exists if moving α from 0 to 1 makes homes hotter but drier. Fake terrain, relative units, not the competition code.</p>
+
+<div class="ctl">
+  <label>layout
+    <select id="layout">
+      <option value="mixed">mixed</option>
+      <option value="ridges">homes on ridges</option>
+      <option value="valleys">homes in valleys</option>
+    </select>
+  </label>
+  <label>α <input id="alpha" type="range" min="0" max="1" step="0.05" value="0"> <span id="alphaV"></span></label>
+  <label>green budget <input id="budget" type="range" min="100" max="700" step="20" value="300"> <span id="budgetV"></span> cells</label>
+</div>
+
+<div class="row">
+  <figure><canvas id="cLand" width="300" height="300"></canvas><figcaption>Land use (grey built, tan homes, green, blue river)</figcaption></figure>
+  <figure><canvas id="cHeat" width="300" height="300"></canvas><figcaption>Relative LST</figcaption></figure>
+  <figure><canvas id="cFlood" width="300" height="300"></canvas><figcaption>Runoff passing through each cell (log)</figcaption></figure>
+  <figure><canvas id="cTrade" width="320" height="300"></canvas><figcaption>Homes: x = mean heat, y = mean runoff, α 0 → 1</figcaption></figure>
+</div>
+
+<table id="robust"></table>
+
+<script>
+// ---------- World ----------
+const N = 60;            // 60 x 60 cells
+const CELL_HA = 0.09;    // 30 m x 30 m
+const BUILT = 0, HOME = 1, GREEN = 2, RIVER = 3;
+
+// Runoff coefficients from Rin (GB 50014): hard surface 0.85-0.95, green 0.10-0.20.
+const RUNOFF = [0.9, 0.9, 0.15, 0];
+// Extra storage a green cell can soak up from upstream, in units of one cell's rainfall.
+const GREEN_CAP = 1.5;
+
+const riverX = y => 46 + 3 * Math.sin(y / 9);
+const hash = i => { const s = Math.sin(i * 12.9898) * 43758.5453; return s - Math.floor(s); };
+
+// Elevation: a slope down to the river, plus gullies at y = 0, 15, 30, 45 running toward it.
+const z = new Float32Array(N * N), isRiver = new Uint8Array(N * N);
+for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+  const i = y * N + x, dx = Math.abs(x - riverX(y));
+  isRiver[i] = dx <= 1.2 ? 1 : 0;
+  z[i] = 0.10 * dx + 0.8 * Math.abs(Math.sin(Math.PI * y / 15)) * Math.min(1, dx / 8) + 0.002 * hash(i);
+}
+
+// D8: each cell drains to its lowest lower neighbour (-1 = pit or river).
+const recv = new Int32Array(N * N).fill(-1);
+for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+  const i = y * N + x; if (isRiver[i]) continue;
+  let best = z[i];
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const nx = x + dx, ny = y + dy;
+    if ((dx || dy) && nx >= 0 && ny >= 0 && nx < N && ny < N && z[ny * N + nx] < best) { best = z[ny * N + nx]; recv[i] = ny * N + nx; }
+  }
+}
+const order = [...Array(N * N).keys()].sort((a, b) => z[b] - z[a]);
+
+// Home clusters [x, y, w, h]. Ridge centres sit at y ≈ 7.5, 22.5, 37.5, 52.5; valleys at 15, 30, 45.
+const LAYOUTS = {
+  mixed:   [[4, 4, 7, 7], [18, 26, 7, 8], [30, 40, 7, 8], [8, 42, 7, 7], [33, 12, 6, 6]],
+  ridges:  [[5, 5, 8, 6], [20, 20, 8, 6], [8, 35, 8, 6], [28, 50, 8, 6], [30, 5, 8, 6]],
+  valleys: [[5, 12, 8, 6], [22, 27, 8, 6], [8, 42, 8, 6], [30, 42, 8, 6], [30, 12, 6, 6]],
+};
+
+// ---------- Mechanisms ----------
+function runoff(lu) {
+  const thru = new Float32Array(N * N), inflow = new Float32Array(N * N);
+  for (const i of order) {
+    if (isRiver[i]) continue;
+    const total = RUNOFF[lu[i]] + inflow[i];
+    thru[i] = total;
+    const out = lu[i] === GREEN ? Math.max(0, total - GREEN_CAP) : total;
+    if (recv[i] >= 0) inflow[recv[i]] += out;
+  }
+  return thru;
+}
+
+function heat(lu) {
+  // Local imperviousness, mixed over a 5 x 5 window.
+  const lst = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    let s = 0, n = 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+      const v = lu[ny * N + nx]; s += (v === BUILT || v === HOME) ? 1 : 0; n++;
+    }
+    lst[y * N + x] = s / n;
+  }
+  // Cooling patches: 4-connected green patches, plus the river as one water body.
+  const seen = new Uint8Array(N * N), patches = [];
+  for (let i = 0; i < N * N; i++) {
+    if (seen[i] || lu[i] !== GREEN) continue;
+    const cells = [], stack = [i]; seen[i] = 1;
+    while (stack.length) {
+      const c = stack.pop(); cells.push(c);
+      const x = c % N, y = (c / N) | 0;
+      for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+        const j = ny * N + nx;
+        if (nx >= 0 && ny >= 0 && nx < N && ny < N && !seen[j] && lu[j] === GREEN) { seen[j] = 1; stack.push(j); }
+      }
+    }
+    patches.push(cells);
+  }
+  const river = []; for (let i = 0; i < N * N; i++) if (lu[i] === RIVER) river.push(i);
+  patches.push(river);
+
+  // Reach from Rin: 100-300 m typical, 300-500 m for large or connected patches.
+  const cool = new Float32Array(N * N);
+  for (const cells of patches) {
+    const ha = cells.length * CELL_HA;
+    const L = (100 + 400 * (1 - Math.exp(-ha / 20))) / 30;   // cells
+    const c = 0.25 + 0.35 * (1 - Math.exp(-ha / 10));        // strength
+    const px = cells.map(k => k % N), py = cells.map(k => (k / N) | 0);
+    for (let i = 0; i < N * N; i++) {
+      const x = i % N, y = (i / N) | 0;
+      let d2 = Infinity;
+      for (let k = 0; k < px.length; k++) { const a = px[k] - x, b = py[k] - y, q = a * a + b * b; if (q < d2) d2 = q; }
+      const v = c * Math.exp(-Math.sqrt(d2) / L);
+      if (v > cool[i]) cool[i] = v;
+    }
+  }
+  for (let i = 0; i < N * N; i++) lst[i] -= cool[i];
+  return lst;
+}
+
+// ---------- Placement ----------
+const cache = {};
+function prep(name) {
+  if (cache[name]) return cache[name];
+  const lu0 = new Uint8Array(N * N);
+  for (let i = 0; i < N * N; i++) lu0[i] = isRiver[i] ? RIVER : BUILT;
+  const home = [];
+  for (const [x0, y0, w, h] of LAYOUTS[name])
+    for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) { lu0[y * N + x] = HOME; home.push(y * N + x); }
+
+  // Distance to nearest home (8-neighbour BFS).
+  const dist = new Int32Array(N * N).fill(1e9), q = [...home];
+  home.forEach(i => dist[i] = 0);
+  for (let h = 0; h < q.length; h++) {
+    const c = q[h], x = c % N, y = (c / N) | 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx, ny = y + dy, j = ny * N + nx;
+      if (nx >= 0 && ny >= 0 && nx < N && ny < N && dist[j] > dist[c] + 1) { dist[j] = dist[c] + 1; q.push(j); }
+    }
+  }
+  // Does this cell's water pass through a home on its way down?
+  const feedsHome = new Uint8Array(N * N);
+  for (let i = 0; i < N * N; i++) {
+    for (let j = recv[i], s = 0; j >= 0 && s < 400; j = recv[j], s++) if (lu0[j] === HOME) { feedsHome[i] = 1; break; }
+  }
+  const base = runoff(lu0);
+  const cand = []; for (let i = 0; i < N * N; i++) if (lu0[i] === BUILT) cand.push(i);
+  // Flood-first: biggest flows that end up in homes, then any big flow.
+  const floodRank = [...cand].sort((a, b) => (feedsHome[b] - feedsHome[a]) || (base[b] - base[a]));
+  // Heat-first: closest to homes, ties shuffled so rings fill evenly.
+  const heatRank = [...cand].sort((a, b) => (dist[a] - dist[b]) || (hash(a + 7) - hash(b + 7)));
+  return cache[name] = { lu0, home, floodRank, heatRank };
+}
+
+function place(name, alpha, budget) {
+  const P = prep(name), lu = P.lu0.slice();
+  const nFlood = Math.round(alpha * budget);
+  let put = 0;
+  for (const i of P.floodRank) { if (put >= nFlood) break; lu[i] = GREEN; put++; }
+  for (const i of P.heatRank) { if (put >= budget) break; if (lu[i] === BUILT) { lu[i] = GREEN; put++; } }
+  return lu;
+}
+
+function evaluate(name, alpha, budget) {
+  const lu = place(name, alpha, budget), P = prep(name);
+  const lst = heat(lu), thru = runoff(lu);
+  let h = 0, f = 0;
+  for (const i of P.home) { h += lst[i]; f += thru[i]; }
+  return { lu, lst, thru, heat: h / P.home.length, flood: f / P.home.length };
+}
+
+// ---------- Drawing ----------
+function paint(canvas, fn) {
+  const img = new ImageData(N, N);
+  for (let i = 0; i < N * N; i++) { const [r, g, b] = fn(i); img.data.set([r, g, b, 255], i * 4); }
+  const off = new OffscreenCanvas(N, N); off.getContext('2d').putImageData(img, 0, 0);
+  const ctx = canvas.getContext('2d'); ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
+}
+const ramp = (t, a, b) => a.map((v, k) => Math.round(v + (b[k] - v) * Math.max(0, Math.min(1, t))));
+const LAND = [[110, 110, 110], [205, 160, 100], [70, 160, 70], [50, 120, 220]];
+
+function drawTrade(curve, cur) {
+  const c = document.getElementById('cTrade'), ctx = c.getContext('2d');
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, c.width, c.height);
+  const xs = curve.map(p => p.heat), ys = curve.map(p => p.flood);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const X = v => 30 + (v - x0) / ((x1 - x0) || 1) * (c.width - 50);
+  const Y = v => c.height - 30 - (v - y0) / ((y1 - y0) || 1) * (c.height - 50);
+  ctx.strokeStyle = '#555'; ctx.beginPath();
+  curve.forEach((p, k) => k ? ctx.lineTo(X(p.heat), Y(p.flood)) : ctx.moveTo(X(p.heat), Y(p.flood))); ctx.stroke();
+  curve.forEach(p => { ctx.fillStyle = `rgb(${ramp(p.alpha, [90, 200, 90], [80, 140, 255])})`; ctx.fillRect(X(p.heat) - 2, Y(p.flood) - 2, 4, 4); });
+  ctx.strokeStyle = '#fff'; ctx.strokeRect(X(cur.heat) - 5, Y(cur.flood) - 5, 10, 10);
+  ctx.fillStyle = '#888';
+  ctx.fillText('α=0', X(curve[0].heat) + 6, Y(curve[0].flood));
+  ctx.fillText('α=1', X(curve.at(-1).heat) + 6, Y(curve.at(-1).flood));
+  ctx.fillText('hotter →', c.width - 60, c.height - 10);
+  ctx.save(); ctx.translate(12, 70); ctx.rotate(-Math.PI / 2); ctx.fillText('wetter →', 0, 0); ctx.restore();
+}
+
+const $ = id => document.getElementById(id);
+function render() {
+  const name = $('layout').value, alpha = +$('alpha').value, budget = +$('budget').value;
+  $('alphaV').textContent = alpha.toFixed(2); $('budgetV').textContent = budget;
+  const r = evaluate(name, alpha, budget);
+  paint($('cLand'), i => LAND[r.lu[i]]);
+  paint($('cHeat'), i => r.lu[i] === RIVER ? [20, 40, 80] : ramp(r.lst[i] + 0.4, [40, 70, 200], [230, 60, 40]));
+  const fmax = Math.log1p(Math.max(...r.thru));
+  paint($('cFlood'), i => r.lu[i] === RIVER ? [20, 40, 80] : ramp(Math.log1p(r.thru[i]) / fmax, [235, 235, 235], [10, 50, 160]));
+  const curve = [];
+  for (let k = 0; k <= 20; k++) { const a = k / 20, e = evaluate(name, a, budget); curve.push({ alpha: a, heat: e.heat, flood: e.flood }); }
+  drawTrade(curve, r);
+
+  // Robustness: every layout, both extremes.
+  const rows = Object.keys(LAYOUTS).map(n => {
+    const a = evaluate(n, 0, budget), b = evaluate(n, 1, budget);
+    const conflict = b.heat > a.heat && b.flood < a.flood;
+    return { n, h0: a.heat, h1: b.heat, f0: a.flood, f1: b.flood, conflict };
+  });
+  $('robust').innerHTML = '<tr><th>layout</th><th>heat α=0</th><th>heat α=1</th><th>runoff α=0</th><th>runoff α=1</th><th>conflict?</th></tr>' +
+    rows.map(o => `<tr><td>${o.n}</td><td>${o.h0.toFixed(3)}</td><td>${o.h1.toFixed(3)}</td><td>${o.f0.toFixed(2)}</td><td>${o.f1.toFixed(2)}</td><td class="${o.conflict ? 'yes' : 'no'}">${o.conflict ? 'yes' : 'no'}</td></tr>`).join('');
+  window.__result = { budget, rows, curve: curve.map(p => [p.alpha, +p.heat.toFixed(3), +p.flood.toFixed(2)]) };
+}
+['layout', 'alpha', 'budget'].forEach(id => $(id).addEventListener('input', render));
+render();
+</script>
+</body>
+</html>
