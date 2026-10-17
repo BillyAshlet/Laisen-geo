@@ -33,12 +33,36 @@ const popFactor = k => 0.4 + 1.6 * k;
 
 // ---------- Facilities ----------
 // Each has a footprint (cells it occupies, by radius) and a radial effect.
+// Strong enough that one facility shifts LST by a few degrees within ~1 km (Rin: park cooling
+// reaches 100–300 m, large or connected parks 300–500 m; the halo here is the e-folding radius).
 const FAC = {
-  factory: { foot: 1.6, cover: C_BUILT, heat: 1.4, heatR: 5 },          // hot plant + ~1 km halo
-  park:    { foot: 2.2, cover: C_GREEN, heat: -0.9, heatR: 4 },         // cooling island, ~800 m
-  pond:    { foot: 2.0, cover: C_WET,   heat: -0.7, heatR: 3 },         // wetland / retention: stores runoff
-  station: { foot: 0.8, cover: C_BUILT, heat: 0, heatR: 0 },            // transit stop: fast trips nearby
+  factory: { foot: 1.6, cover: C_BUILT, heat: 2.4, heatR: 5, cost: 30 },   // hot plant + ~1 km halo; earns money
+  park:    { foot: 2.6, cover: C_GREEN, heat: -2.2, heatR: 4, cost: 20 },  // cooling island, ~800 m
+  pond:    { foot: 2.4, cover: C_WET,   heat: -1.6, heatR: 3, cost: 25 },  // wetland / retention: stores runoff
+  station: { foot: 0.8, cover: C_BUILT, heat: 0, heatR: 0, cost: 40 },     // transit stop: fast trips nearby
 };
+// Budget: start money plus what factories earn; every facility costs money.
+const START_BUDGET = 60, INCOME_PER_OUTPUT = 40;
+
+// Siting rules: why a facility can or can't go somewhere. Returns null if fine, else a reason key.
+function siteCheck(w, type, x, y) {
+  const i = Math.floor(y) * N + Math.floor(x), b = w.base;
+  if (b.out[i] || b.river[i]) return 'water';
+  const bl = blockAtPoint(w, x, y);
+  if (bl >= 0 && w.locked[bl]) return 'locked';
+  const nearRoad = (lv, km) => {
+    const r = Math.ceil(km / CELL_KM);
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const cx = Math.floor(x) + dx, cy = Math.floor(y) + dy;
+      if (cx >= 0 && cy >= 0 && cx < N && cy < N && b.roadCell[cy * N + cx] >= lv && Math.hypot(dx, dy) * CELL_KM <= km) return true;
+    }
+    return false;
+  };
+  if (type === 'factory' && !nearRoad(2, 1.2)) return 'needFreight';         // goods go out by expressway
+  if (type === 'station' && !nearRoad(1, 0.3)) return 'needRoad';            // stops sit on a road
+  if (type === 'pond' && (b.z[i] - b.zlo) / (b.zhi - b.zlo) > 0.4) return 'tooHigh';   // water must flow to it
+  return null;
+}
 const FACTORY_NUISANCE_KM = 1.5;   // pollution / noise decay distance
 const STATION_KM = 1.5, TRANSIT_KMH = 45, TRANSIT_WAIT = 6;   // walk-in radius, line speed, wait (min)
 
@@ -436,7 +460,9 @@ function evaluate(w) {
   // Output: each factory produces more when more workers can reach it.
   let output = 0;
   for (const F of plants) { const b = blockAtPoint(w, F.x, F.y); output += 0.5 + 0.5 * Math.min(1, (b >= 0 ? workers[b] : 0) / 800); }
-  let totalPop = 0; for (const v of pop) totalPop += v;
+  let totalPop = 0, totalJobs = 0; for (let b = 0; b < B; b++) { totalPop += pop[b]; totalJobs += jobs[b]; }
+  let spent = 0; for (const F of w.facilities) spent += FAC[F.type].cost;
+  const budget = START_BUDGET + output * INCOME_PER_OUTPUT - spent;
   const counts = { factory: 0, park: 0, pond: 0, station: 0 };
   for (const F of w.facilities) counts[F.type]++;
 
@@ -451,7 +477,8 @@ function evaluate(w) {
     r = sab / Math.sqrt(saa * sbb);
   }
   const read = {
-    r, pop: totalPop,
+    r, pop: totalPop, jobs: totalJobs, budget,
+    jobsShare: totalJobs / (0.5 * totalPop || 1),   // goal: jobs for half the population
     lst: 26 + 10 * h / n,                       // rough °C mapping; calibrate with Rin's LST
     flood: f / n,
     commute: popSum ? commuteSum / popSum : 0,  // minutes

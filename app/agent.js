@@ -1,7 +1,9 @@
-// AGENT — rule-based, no language model. Perceive → evaluate every small legal move →
-// suggest the best few, each with a reason derived from the mechanisms.
-// Moves: nudge one block's green ratio or intensity one step, or move one facility to another block.
-// Constraint: everyone must stay housed (population ≥ 98% of the starting population).
+// AGENT — rule-based, no language model. Perceive → diagnose → evaluate every small legal
+// move → suggest the best few, each with a reason derived from the mechanisms.
+// Moves: nudge one block's green ratio or intensity one step; move a facility to another block;
+// or build a new park / pond / factory where the siting rules and the budget allow.
+// Constraint: people stay housed. If the plan is already short of the target, a move may not
+// make it worse (otherwise every move would be rejected and the agent would have nothing to say).
 
 const AGENT_WEIGHTS = [1, 1, 1];   // heat, flood, commute (equal for now)
 
@@ -29,42 +31,68 @@ function homesWithin(w, x, y, km) {
 }
 const delta = (base, r) => ({ lst: r.lst - base.lst, flood: (r.flood / base.flood - 1) * 100, commute: r.commute - base.commute, comp: r.complaints - base.complaints });
 
-async function runAgent(w, onLine) {
-  const L = T(), R = L.reasons;
-  const base = evaluate(w), baseScore = score(base.read), minPop = w.popTarget * 0.98;
-  onLine(L.agentPerceive(base.read), '');
+// Diagnosis: the residential blocks that are hottest and most flood-prone right now.
+function diagnose(w, f) {
+  const res = [...Array(w.nb).keys()].filter(b => w.use[b] === RES && f.pop[b] > 0);
+  const hot = [...res].sort((a, b) => f.blockLst[b] - f.blockLst[a]).slice(0, 3);
+  const wet = [...res].sort((a, b) => f.blockFlood[b] - f.blockFlood[a]).slice(0, 3);
+  return { hot, wet };
+}
+
+// hooks: onLine(text, cls, suggestion), onTotal(n), onCand(candidate, accepted)
+async function runAgent(w, hooks) {
+  const L = T(), R = L.reasons, { onLine, onTotal = () => {}, onCand = () => {} } = hooks;
+  const base = evaluate(w), baseScore = score(base.read);
+  const minPop = Math.min(w.popTarget * 0.98, base.read.pop * 0.999);
   const cands = [];
   let tried = 0, rejected = 0;
   const consider = (c, r) => {
-    tried++;
-    if (r.pop < minPop) { rejected++; return; }
-    c.r = r; c.gain = baseScore - score(r); cands.push(c);
+    tried++; c.r = r; c.gain = baseScore - score(r);
+    const ok = r.pop >= minPop && r.budget >= 0;
+    if (!ok) rejected++; else cands.push(c);
+    onCand(c, ok, base.read);
   };
 
+  // Count what we are about to try, so the view can show progress.
+  const editableBlocks = [...Array(w.nb).keys()].filter(b => editable(w, b));
+  const openBlocks = [...Array(w.nb).keys()].filter(b => !w.locked[b]);
+  onTotal(editableBlocks.length * 4 + w.facilities.length * openBlocks.length + 3 * openBlocks.length);
+
   // 1. One step on one block's sliders.
-  for (let b = 0; b < w.nb; b++) {
-    if (!editable(w, b)) continue;
+  for (const [n, b] of editableBlocks.entries()) {
     const e0 = w.edited[b];
     for (const [key, step, lo, hi] of [['green', 0.1, 0.05, 0.5], ['intensity', 0.2, 0, 1]]) {
       for (const dir of [1, -1]) {
         const from = w[key][b], to = Math.round(Math.min(hi, Math.max(lo, from + dir * step)) * 100) / 100;
-        if (to === from) continue;
+        if (to === from) { tried++; continue; }
         w[key][b] = to; w.edited[b] = 1;
         consider({ kind: 'slider', b, key, from, to }, evaluate(w).read);
         w[key][b] = from; w.edited[b] = e0;
       }
     }
-    if (b % 8 === 7) await new Promise(res => setTimeout(res, 0));   // let the page breathe
+    if (n % 4 === 3) await new Promise(res => setTimeout(res, 0));   // let the page draw
   }
-  // 2. Move one facility to the centre of another block.
+  // 2. Move each existing facility to the centre of every other open block.
   for (const [k, F] of w.facilities.entries()) {
     const from = { x: F.x, y: F.y };
-    w.base.blocks.forEach((B, b) => {
-      if (w.locked[b]) return;
-      F.x = B.cx + 0.5; F.y = B.cy + 0.5;
-      consider({ kind: 'move', k, type: F.type, from, to: { x: F.x, y: F.y }, b }, evaluate(w).read);
-    });
+    for (const b of openBlocks) {
+      const B = w.base.blocks[b], x = B.cx + 0.5, y = B.cy + 0.5;
+      if (siteCheck(w, F.type, x, y)) { tried++; continue; }
+      F.x = x; F.y = y;
+      consider({ kind: 'move', k, type: F.type, from, to: { x, y }, b }, evaluate(w).read);
+    }
     F.x = from.x; F.y = from.y;
+    await new Promise(res => setTimeout(res, 0));
+  }
+  // 3. Build one new park, pond or factory in every open block where it is allowed.
+  for (const type of ['park', 'pond', 'factory']) {
+    for (const b of openBlocks) {
+      const B = w.base.blocks[b], x = B.cx + 0.5, y = B.cy + 0.5;
+      if (siteCheck(w, type, x, y)) { tried++; continue; }
+      w.facilities.push({ type, x, y });
+      consider({ kind: 'build', type, to: { x, y }, b }, evaluate(w).read);
+      w.facilities.pop();
+    }
     await new Promise(res => setTimeout(res, 0));
   }
   onLine(L.agentTried(tried, rejected), '');
@@ -73,14 +101,15 @@ async function runAgent(w, onLine) {
   const best = cands.filter(c => c.gain > 0.002).sort((x, y) => y.gain - x.gain);
   const used = new Set(), picks = [];
   for (const c of best) {
-    const key = c.kind === 'slider' ? 'b' + c.b : 'f' + c.k;
-    if (used.has(key)) continue;
-    used.add(key); picks.push(c); if (picks.length === 3) break;
+    const key = c.kind === 'slider' ? 'b' + c.b : c.kind === 'move' ? 'f' + c.k : 'n' + c.type;
+    if (used.has(key) || used.has('b' + c.b)) continue;
+    used.add(key); used.add('b' + c.b); picks.push(c); if (picks.length === 3) break;
   }
-  if (!picks.length) { onLine(L.agentNone, 'good'); return []; }
+  if (!picks.length) { onLine(L.agentNone, 'good'); return { picks, base }; }
 
   for (const c of picks) {
     const d = delta(base.read, c.r), why = [];
+    c.d = d;
     if (c.kind === 'slider') {
       if (c.key === 'green' && c.to > c.from) {
         if (up[c.b] > 3) why.push(R.upstream);
@@ -91,15 +120,18 @@ async function runAgent(w, onLine) {
       if (c.key === 'green' && c.to < c.from) why.push(R.greenElsewhere);
       const name = c.key === 'green' ? L.greenRatio : L.intensity;
       const fmtV = v => c.key === 'green' ? Math.round(v * 100) + '%' : String(Math.round(v * 100));
-      onLine(L.agentSlider(c.b, name, fmtV(c.from), fmtV(c.to), d, why.length ? why.join(R.and) : R.generic), 'warn', c);
+      c.text = L.agentSlider(c.b, name, fmtV(c.from), fmtV(c.to), d, why.length ? why.join(R.and) : R.generic);
     } else {
-      if (c.type === 'factory' && homesWithin(w, c.to.x, c.to.y, FACTORY_NUISANCE_KM) < homesWithin(w, c.from.x, c.from.y, FACTORY_NUISANCE_KM)) why.push(R.industryOut);
+      if (c.type === 'factory' && c.kind === 'move' && homesWithin(w, c.to.x, c.to.y, FACTORY_NUISANCE_KM) < homesWithin(w, c.from.x, c.from.y, FACTORY_NUISANCE_KM)) why.push(R.industryOut);
       if (c.type === 'factory' && d.commute < -0.05) why.push(R.factoryWorkers);
+      if (c.type === 'factory' && c.kind === 'build') why.push(R.factoryIncome);
       if ((c.type === 'park' || c.type === 'pond') && up[c.b] > 3) why.push(R.upstream);
       if ((c.type === 'park' || c.type === 'pond') && adjacentHomes(w, c.b) >= 2) why.push(R.coolsHomes);
       if (c.type === 'station' && d.commute < 0) why.push(R.stationHomes);
-      onLine(L.agentMove(L.tools[c.type], c.b, d, why.length ? why.join(R.and) : R.generic), 'warn', c);
+      const text = why.length ? why.join(R.and) : R.generic;
+      c.text = c.kind === 'move' ? L.agentMove(L.tools[c.type], c.b, d, text) : L.agentBuild(L.tools[c.type], c.b, d, text);
     }
+    onLine(c.text, 'warn', c);
   }
-  return picks;
+  return { picks, base };
 }

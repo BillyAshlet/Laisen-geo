@@ -1,9 +1,10 @@
 // Shell wiring: tools, block sliders, facilities, small maps, readouts, trade-off, agent log.
 const $ = s => document.querySelector(s);
-const worlds = { sandbox: makeWorld(), city: null };
-let world = worlds.sandbox;
+// Changchun first: analyse a real city before playing in the sandbox.
+const worlds = { city: makeCityWorld(), sandbox: null };
+let world = worlds.city;
 let fields;
-let tool = 'select', selected = -1, mode = 'sandbox';
+let tool = 'select', selected = -1, mode = 'city';
 const history = [];
 const COVER_COLORS = ['#B8B2A3', '#ABE3A9', '#C3C9B5', '#5D93CB', '#82BCC4', '#F6F2EA', '#7A7466'];   // …, outside, road
 const ROAD_COLORS = ['#8E8676', '#8E8676', '#5A554B'];   // arterial, expressway
@@ -13,7 +14,7 @@ const FAC_TYPES = ['factory', 'park', 'pond', 'station'];
 function buildToolbar() {
   $('#toolbar').innerHTML = ['select', ...FAC_TYPES].map(t =>
     `<button class="block${t === tool ? ' on' : ''}" data-t="${t}" style="--c:${FAC_COLORS[t]};color:${t === 'factory' ? '#fff' : '#2F2D28'}">
-       <span class="glyph">${FAC_GLYPHS[t]}</span>${T().tools[t]}</button>`).join('') +
+       <span class="glyph">${FAC_GLYPHS[t]}</span>${T().tools[t]}${t === 'select' ? '' : `<span class="tool-cost">¥${FAC[t].cost}</span>`}</button>`).join('') +
     `<div class="hint">${T().toolHint}</div>`;
   $('#toolbar').querySelectorAll('.block').forEach(b => b.onclick = () => { tool = b.dataset.t; buildToolbar(); });
 }
@@ -120,6 +121,7 @@ function drawMap() {
     if (fields.cover[i] !== C_WATER) continue;
     ctx.beginPath(); ctx.arc((i % N + 0.5) * c, (((i / N) | 0) + 0.5) * c, c * 0.78, 0, 2 * Math.PI); ctx.fill();
   }
+  drawHalos(ctx, c);
   drawRoads(ctx, c);
   drawSelection(ctx, c);
   drawFacilities(ctx, c);
@@ -145,6 +147,19 @@ function drawRoads(ctx, c) {
     }
     for (const [r, lv] of [[11, 1], [23, 1], [37, 2]])
       stroke(lv, () => { ctx.beginPath(); ctx.arc((CENTER[0] + 0.5) * c, (CENTER[1] + 0.5) * c, r * c, 0, 2 * Math.PI); });
+  }
+}
+
+// Each facility's reach drawn on the map itself: a radial gradient following the same
+// Gaussian fall-off the engine uses (warm for factories, cool for parks and ponds).
+function drawHalos(ctx, c) {
+  for (const F of world.facilities) {
+    const { heat: H, heatR: R } = FAC[F.type]; if (!H) continue;
+    const x = F.x * c, y = F.y * c, rad = 2.5 * R * c;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+    const col = H > 0 ? '200,84,26' : '46,140,150';
+    for (let k = 0; k <= 6; k++) { const d = k / 6 * 2.5; g.addColorStop(k / 6, `rgba(${col},${(0.55 * Math.exp(-d * d)).toFixed(3)})`); }
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI); ctx.fill();
   }
 }
 
@@ -196,12 +211,15 @@ function drawReadouts() {
     ctx.stroke();
   });
   // Housing constraint: everyone must stay housed. Facilities: counts by type.
-  const share = fields.read.pop / (world.popTarget || 1);
+  const R = fields.read, share = R.pop / (world.popTarget || 1), js = R.jobsShare;
   const counts = FAC_TYPES.map(t => `${FAC_GLYPHS[t]} ${fields.counts[t]}`).join('　');
-  $('#constraints').innerHTML = `
-    <div class="meter ${share >= 0.98 ? 'ok' : 'bad'}"><div class="row"><span>${T().popLabel}</span><b>${Math.round(share * 100)}%</b></div>
-      <div class="bar"><i style="width:${Math.min(100, share * 100)}%"></i></div></div>
-    <div class="meter"><div class="row"><span>${T().facLabel}</span><b>${counts}</b></div></div>`;
+  const meter = (label, v, ok, txt) => `<div class="meter ${ok ? 'ok' : 'bad'}"><div class="row"><span>${label}</span><b>${txt}</b></div>
+      <div class="bar"><i style="width:${Math.max(0, Math.min(100, v * 100))}%"></i></div></div>`;
+  $('#constraints').innerHTML =
+    meter(T().popLabel, share, share >= 0.98, Math.round(share * 100) + '%') +
+    meter(T().jobsLabel, js, js >= 1, Math.round(js * 100) + '%') +
+    meter(T().budgetLabel, R.budget / 200, R.budget >= 0, '¥' + Math.round(R.budget)) +
+    `<div class="meter"><div class="row"><span>${T().facLabel}</span><b>${counts}</b></div></div>`;
 }
 
 // ---------- Trade-off triangle ----------
@@ -225,24 +243,24 @@ function drawTrade() {
 }
 
 // ---------- Agent log ----------
+function applySuggestion(c) {
+  if (c.kind === 'move') {
+    const F = world.facilities[c.k]; if (F) { F.x = c.to.x; F.y = c.to.y; }
+    log(T().logFacMoved(T().tools[c.type], c.b), 'good');
+  } else if (c.kind === 'build') {
+    world.facilities.push({ type: c.type, x: c.to.x, y: c.to.y });
+    log(T().logFacPlaced(T().tools[c.type], c.b), 'good');
+  } else {
+    world[c.key][c.b] = c.to; world.edited[c.b] = 1; selected = c.b;
+    log(T().logApplied, 'good');
+  }
+  highlight = new Set(); buildBlockPanel(); renderAll();
+}
 function log(msg, cls = '', suggestion = null) {
   const t = new Date().toTimeString().slice(0, 8);
   const li = document.createElement('li'); li.className = cls;
   li.innerHTML = `<span class="t">${t}</span>${msg}`;
-  if (suggestion) {                       // clicking a suggestion applies it
-    li.classList.add('act');
-    li.onclick = () => {
-      const c = suggestion;
-      if (c.kind === 'move') {
-        const F = world.facilities[c.k]; if (F) { F.x = c.to.x; F.y = c.to.y; }
-        log(T().logFacMoved(T().tools[c.type], c.b), 'good');
-      } else {
-        world[c.key][c.b] = c.to; world.edited[c.b] = 1; selected = c.b;
-        log(T().logApplied, 'good');
-      }
-      highlight = new Set(); buildBlockPanel(); renderAll();
-    };
-  }
+  if (suggestion) { li.classList.add('act'); li.onclick = () => applySuggestion(suggestion); }
   $('#log').appendChild(li); $('#log').scrollTop = 1e9;
 }
 
@@ -255,12 +273,85 @@ function drawHighlight() {
   for (let i = 0; i < N * N; i++) if (!(bo[i] >= 0 && highlight.has(bo[i]))) ctx.fillRect((i % N) * c, ((i / N) | 0) * c, c + 0.5, c + 0.5);
 }
 
+// ---------- Agent view: the evaluation takes over the working area ----------
+// 1 perceive (big LST, hottest homes circled) → 2 diagnose (big flood map, wettest circled)
+// → 3 compute (every option plotted live: heat change vs flood change) → 4 suggest (cards).
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function circleBlocks(canvas, blocks, color) {
+  const ctx = canvas.getContext('2d'), S = canvas.width / N;
+  ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.font = '600 22px "IBM Plex Mono", monospace';
+  blocks.forEach((b, k) => {
+    const B = world.base.blocks[b], r = Math.sqrt(B.cells.length / Math.PI) * S + 10;
+    ctx.beginPath(); ctx.arc((B.cx + 0.5) * S, (B.cy + 0.5) * S, r, 0, 2 * Math.PI); ctx.stroke();
+    ctx.fillText(String(k + 1), (B.cx + 0.5) * S + r * 0.75, (B.cy + 0.5) * S - r * 0.75);
+  });
+}
+function avStep(text) {
+  $('#avSteps').querySelectorAll('li').forEach(li => li.classList.remove('now'));
+  const li = document.createElement('li'); li.className = 'now'; li.textContent = text; $('#avSteps').appendChild(li);
+  return li;
+}
+// Scatter: x = change in homes' LST (°), y = change in flood exposure (%). Each dot one option.
+const SC = { x: 0.4, y: 4 };   // ±0.4 °C, ±4 %: single steps are small, so zoom in
+function scatterAxes() {
+  const cv = $('#avScatter'), ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(95,166,158,.12)'; ctx.fillRect(0, H / 2, W / 2, H / 2);       // cooler and drier: the good quadrant
+  ctx.strokeStyle = '#D9D1C1'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+  ctx.fillStyle = '#6E685C'; ctx.font = '12px "IBM Plex Mono", monospace';
+  ctx.fillText(T().av.scatterX, 8, H - 8); ctx.save(); ctx.translate(14, H - 30); ctx.rotate(-Math.PI / 2); ctx.fillText(T().av.scatterY, 0, 0); ctx.restore();
+}
+const SC_COL = { slider: '#857F6E', move: '#2F7A7C', build: '#4682BE' };
+function scatterDot(c, ok, base, big = false) {
+  const cv = $('#avScatter'), ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
+  const d = delta(base, c.r);
+  const x = W / 2 + Math.max(-1, Math.min(1, d.lst / SC.x)) * (W / 2 - 8);
+  const y = H / 2 - Math.max(-1, Math.min(1, d.flood / SC.y)) * (H / 2 - 8);
+  if (big) { ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, 9, 0, 2 * Math.PI); ctx.stroke(); return; }
+  ctx.fillStyle = ok ? SC_COL[c.kind] : 'rgba(110,104,92,.25)';
+  ctx.beginPath(); ctx.arc(x, y, ok ? 3 : 2, 0, 2 * Math.PI); ctx.fill();
+}
+async function openAgentView() {
+  const av = $('#av'); av.classList.remove('hidden');
+  $('#avTitle').textContent = T().av.title; $('#avClose').textContent = T().av.close;
+  $('#avSteps').innerHTML = ''; $('#avCards').innerHTML = ''; $('#avScCap').textContent = '';
+  const big = $('#avMap'), d = diagnose(world, fields);
+  // 1. Perceive
+  drawField(big, fields.lst, 'diverging'); circleBlocks(big, d.hot, '#2F2D28');
+  $('#avCap').textContent = T().layers[0];
+  avStep(T().av.s1 + '  ' + T().agentPerceive(fields.read)); await sleep(1400);
+  // 2. Diagnose
+  drawField(big, fields.flood, 'floodBlue'); circleBlocks(big, d.wet, '#2F2D28');
+  $('#avCap').textContent = T().layers[1];
+  avStep(T().av.s2 + '  ' + T().diag(d.hot, d.wet)); await sleep(1400);
+  // 3. Compute, plotting every option as it is evaluated
+  scatterAxes(); $('#avScCap').textContent = T().av.scatterX + ' · ' + T().av.scatterY;
+  let total = 1, done = 0; const prog = avStep(T().av.s3(0, '…'));
+  const { picks, base } = await runAgent(world, {
+    onLine: log,
+    onTotal: n => { total = n; },
+    onCand: (c, ok, b) => { done++; scatterDot(c, ok, b); if (done % 25 === 0) prog.textContent = T().av.s3(done, total); },
+  });
+  prog.textContent = T().av.s3(done, done);
+  // 4. Suggest
+  avStep(picks.length ? T().av.s4 : T().av.none);
+  drawField(big, fields.lst, 'diverging');
+  circleBlocks(big, picks.map(p => p.b), '#2F2D28');   // ink, not ochre: ochre never goes inside a neatline
+  $('#avCap').textContent = T().layers[0];
+  picks.forEach((c, k) => {
+    scatterDot(c, true, base.read, true);
+    const card = document.createElement('div'); card.className = 'card';
+    card.innerHTML = `<span class="n">${k + 1}</span><span>${c.text.replace(T().agentClick, '')}</span><button class="block ochre">${T().av.apply}</button>`;
+    card.querySelector('button').onclick = () => { av.classList.add('hidden'); applySuggestion(c); };
+    $('#avCards').appendChild(card);
+  });
+  highlight = new Set(picks.map(p => p.b));
+}
+$('#avClose').onclick = () => { $('#av').classList.add('hidden'); drawMap(); };
 $('#ask').onclick = async () => {
   $('#ask').disabled = true;
-  const picks = await runAgent(world, log);
-  highlight = new Set(picks.flatMap(p => p.kind === 'move' ? [p.b, blockAtPoint(world, p.from.x, p.from.y)] : [p.b]));
-  drawMap();
-  $('#ask').disabled = false;
+  try { await openAgentView(); } finally { $('#ask').disabled = false; }
 };
 
 // ---------- Render all ----------
@@ -298,10 +389,11 @@ map.addEventListener('pointerdown', e => {
   const near = world.facilities.findIndex(F => Math.hypot(F.x - x, F.y - y) < 2.5);
   if (near >= 0) { const [F] = world.facilities.splice(near, 1); log(T().logFacRemoved(T().tools[F.type])); }
   else {
-    const i = Math.floor(y) * N + Math.floor(x);
-    if (world.base.out[i] || world.base.river[i]) return;
+    // Siting rules first, then money: every refusal says why, so the rule is the lesson.
+    const why = siteCheck(world, tool, x, y);
+    if (why) { log(T().site[why], 'warn'); return; }
+    if (fields.read.budget < FAC[tool].cost) { log(T().site.budget('¥' + FAC[tool].cost), 'warn'); return; }
     const b = blockAtPoint(world, x, y);
-    if (b >= 0 && world.locked[b]) { log(T().logLocked(b), 'warn'); return; }
     world.facilities.push({ type: tool, x, y }); log(T().logFacPlaced(T().tools[tool], b));
   }
   highlight = new Set(); renderAll();
@@ -311,7 +403,7 @@ map.addEventListener('pointerdown', e => {
 document.querySelectorAll('#mode .block').forEach(b => b.onclick = () => {
   mode = b.dataset.mode;
   document.querySelectorAll('#mode .block').forEach(o => o.classList.toggle('on', o === b));
-  if (mode === 'city' && !worlds.city) worlds.city = makeCityWorld();
+  if (!worlds[mode]) worlds[mode] = mode === 'city' ? makeCityWorld() : makeWorld();
   world = worlds[mode]; highlight = new Set(); history.length = 0; selected = -1; buildBlockPanel();
   if (mode !== 'city' && revealed) { revealed = false; $('#reveal').textContent = T().reveal; }
   log(T().logMode(b.textContent, world.nb));
@@ -351,4 +443,6 @@ addEventListener('resize', () => { sizeLayout(); sizeMap(); drawMap(); drawTrade
 
 // ---------- Boot ----------
 applyStrings(); buildToolbar(); buildBlockPanel(); buildSmalls(); sizeLayout(); sizeMap(); renderAll();
-log(T().logBoot(world.nb)); log(T().logEngine(lastMs.toFixed(0)));
+log(T().logMode(T().modeCity, world.nb)); log(T().logEngine(lastMs.toFixed(0)));
+log(T().logFit(fields.read.r.toFixed(2)), 'good');
+{ const d = diagnose(world, fields); log(T().diag(d.hot, d.wet), 'warn'); highlight = new Set([...d.hot, ...d.wet]); drawMap(); }

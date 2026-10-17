@@ -171,3 +171,24 @@ figcaption {
 .slider input:disabled { opacity: .4; }
 .meter.bad .bar i { background: #C8541A; }
 .ask:disabled { opacity: .6; cursor: wait; }
+
+/* ---------- Agent evaluation view ---------- */
+.layout { position: relative; }
+.av { position: absolute; inset: 0; background: var(--paper); z-index: 5; display: flex; flex-direction: column;
+  padding: 12px 16px; gap: 10px; animation: avIn .25s ease-out; }
+.av.hidden { display: none; }
+@keyframes avIn { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: none; } }
+.avhead { display: flex; justify-content: space-between; align-items: center; font: 500 13px var(--mono); letter-spacing: .12em; }
+.avhead span::before { content: "▶ "; color: var(--ochre); }
+.avbody { display: flex; gap: 16px; min-height: 0; flex: 1; }
+.avmap canvas { width: calc(var(--H) - 110px); height: calc(var(--H) - 110px); }
+.avside { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+#avSteps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
+#avSteps li { padding: 8px 10px; background: var(--paper-2); border-left: 4px solid var(--rule); animation: avIn .3s ease-out; }
+#avSteps li.now { border-left-color: var(--ochre); background: #fff; }
+.avsc canvas { width: 100%; height: auto; }
+#avCards { display: grid; gap: 8px; }
+.card { background: #fff; border: 1.5px solid var(--neat); padding: 10px 12px; font-size: 13px; display: grid; gap: 8px; animation: avIn .3s ease-out; }
+.card .n { font: 500 12px var(--mono); color: var(--ochre); }
+.card .block { justify-self: start; }
+.tool-cost { margin-left: auto; font: 11px var(--mono); opacity: .75; }

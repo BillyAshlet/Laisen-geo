@@ -16,8 +16,8 @@
     <h1 data-i18n="title"></h1>
   </div>
   <nav class="seg" id="mode">
-    <button class="block on" data-mode="sandbox" data-i18n="modeSandbox"></button>
-    <button class="block" data-mode="city" data-i18n="modeCity"></button>
+    <button class="block on" data-mode="city" data-i18n="modeCity"></button>
+    <button class="block" data-mode="sandbox" data-i18n="modeSandbox"></button>
   </nav>
   <div class="spacer"></div>
   <button class="block ochre" id="reveal" data-i18n="reveal"></button>
@@ -50,6 +50,19 @@
   <aside class="panel">
     <div class="smalls" id="smalls"></div>
   </aside>
+
+  <!-- Agent evaluation: takes over the working area so the analysis is the thing you look at. -->
+  <section id="av" class="av hidden">
+    <header class="avhead"><span id="avTitle"></span><button class="block" id="avClose"></button></header>
+    <div class="avbody">
+      <figure class="neatline avmap"><canvas id="avMap" width="720" height="720"></canvas><figcaption id="avCap"></figcaption></figure>
+      <div class="avside">
+        <ol id="avSteps"></ol>
+        <figure class="neatline avsc"><canvas id="avScatter" width="560" height="190"></canvas><figcaption id="avScCap"></figcaption></figure>
+        <div id="avCards"></div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <footer class="term dark">
