@@ -4,4 +4,3 @@ node_modules/
 
 # Teammate-provided data package (not public)
 data/raw/
-app/data/changchun.js
