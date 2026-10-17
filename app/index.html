@@ -6,7 +6,7 @@
 <title>城市空间规划情景模拟</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 <!-- Dark bars top and bottom frame the light working area. -->
@@ -29,9 +29,6 @@
     <h2 data-i18n="toolsHead"></h2>
     <div id="toolbar" class="palette"></div>
 
-    <h2 data-i18n="blockHead"></h2>
-    <div id="blockPanel" class="blockpanel"></div>
-
     <h2 data-i18n="constraintsHead"></h2>
     <div id="constraints" class="constraints"></div>
 
@@ -43,6 +40,7 @@
       <canvas id="map"></canvas>
       <div class="north">N<span>▲</span></div>
       <div class="scale"><span></span><em>3 km</em></div>
+      <div id="popup" class="popup blockpanel hidden"></div>
     </figure>
     <div class="hint" data-i18n="mapHint"></div>
   </section>
@@ -76,11 +74,11 @@
   </div>
 </footer>
 
-<script src="i18n.js"></script>
-<script src="palette.js"></script>
-<script src="data/changchun.js"></script>
-<script src="engine.js"></script>
-<script src="agent.js"></script>
-<script src="ui.js"></script>
+<script src="i18n.js?v=7"></script>
+<script src="palette.js?v=7"></script>
+<script src="data/changchun.js?v=7"></script>
+<script src="engine.js?v=7"></script>
+<script src="agent.js?v=7"></script>
+<script src="ui.js?v=7"></script>
 </body>
 </html>

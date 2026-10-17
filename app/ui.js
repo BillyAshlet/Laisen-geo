@@ -14,40 +14,75 @@ const FAC_TYPES = ['factory', 'park', 'pond', 'station'];
 function buildToolbar() {
   $('#toolbar').innerHTML = ['select', ...FAC_TYPES].map(t =>
     `<button class="block${t === tool ? ' on' : ''}" data-t="${t}" style="--c:${FAC_COLORS[t]};color:${t === 'factory' ? '#fff' : '#2F2D28'}">
-       <span class="glyph">${FAC_GLYPHS[t]}</span>${T().tools[t]}${t === 'select' ? '' : `<span class="tool-cost">¥${FAC[t].cost}</span>`}</button>`).join('') +
-    `<div class="hint">${T().toolHint}</div>`;
-  $('#toolbar').querySelectorAll('.block').forEach(b => b.onclick = () => { tool = b.dataset.t; buildToolbar(); });
+       <span class="glyph">${FAC_GLYPHS[t]}</span>${T().tools[t]}${t === 'station' ? `<span class="tool-cost">${world.facilities.filter(F => F.type === 'station').length}/${MAX_STATIONS}</span>` : ''}</button>`).join('') +
+    `<div class="hint">${T().toolHint}</div>
+     <h2>${T().rainHead}</h2>
+     <nav class="seg" id="rain">${T().rain.map((r, k) => `<button class="block${(world.rain ?? 1) === k ? ' on' : ''}" data-r="${k}">${r}</button>`).join('')}</nav>`;
+  $('#toolbar').querySelectorAll('.block[data-t]').forEach(b => b.onclick = () => { tool = b.dataset.t; buildToolbar(); });
+  $('#toolbar').querySelectorAll('.block[data-r]').forEach(b => b.onclick = () => {
+    world.rain = +b.dataset.r; buildToolbar(); renderAll(); log(T().logRain(T().rain[world.rain], fields.read.flood.toFixed(2)));
+  });
 }
 
-// ---------- Block panel: the two control indicators of the selected block ----------
+// ---------- Block popup: opens next to the clicked block ----------
+// Sliders for the block's two control indicators, the block's own numbers, and how the
+// city-wide goals have moved since the popup opened — so every cost is in front of you.
+let popBase = null;
 function buildBlockPanel() {
-  const P = $('#blockPanel');
-  if (selected < 0) { P.innerHTML = `<div class="muted">${T().pickBlock}</div>`; return; }
-  const b = selected, u = world.use[b], ok = editable(world, b);
-  const head = `<div class="head"><span class="sw" style="background:${TYPE_COLORS[u]}"></span>${T().blockTitle(b, T().types[u])}</div>`;
-  if (!ok) { P.innerHTML = head + `<div class="muted">${T().fixedBlock}</div>`; return; }
-  const g = Math.round(world.green[b] * 100), k = Math.round(world.intensity[b] * 100);
-  P.innerHTML = head + `
-    <label class="slider"><span class="row"><span>${T().greenRatio}</span><b id="gv">${g}%</b></span>
-      <input id="gs" type="range" min="5" max="50" step="5" value="${g}"></label>
-    <label class="slider"><span class="row"><span>${T().intensity}</span><b id="kv">${k}</b></span>
-      <input id="ks" type="range" min="0" max="100" step="10" value="${k}">
-      <span class="row muted"><span>${T().intensityLow}</span><span>${T().intensityHigh}</span></span></label>`;
-  const hook = (id, key, label, show, fmtV) => {
-    const el = $(id);
-    el.oninput = () => { world[key][b] = +el.value / 100; world.edited[b] = 1; highlight = new Set(); $(show).textContent = fmtV(el.value); scheduleRender(); };
-    el.onchange = () => log(T().logSlider(b, label, fmtV(el.value)));
-  };
-  P.insertAdjacentHTML('beforeend', `<div class="muted" id="blockStats"></div>`);
-  hook('#gs', 'green', T().greenRatio, '#gv', v => v + '%');
-  hook('#ks', 'intensity', T().intensity, '#kv', v => v);
+  const P = $('#popup');
+  if (selected < 0) { P.classList.add('hidden'); popBase = null; return; }
+  const b = selected, u = world.use[b], ok = editable(world, b), B = world.base.blocks[b];
+  popBase = { ...fields.read };
+  const head = `<div class="head"><span class="sw" style="background:${TYPE_COLORS[u]}"></span><b>${T().blockTitle(b, T().types[u])}</b>
+    <button class="x" id="popX" aria-label="close">×</button></div>`;
+  if (!ok) P.innerHTML = head + `<div class="muted">${T().fixedBlock}</div>`;
+  else {
+    const g = Math.round(world.green[b] * 100), k = Math.round(world.intensity[b] * 100);
+    P.innerHTML = head + `
+      <label class="slider"><span class="row"><span>${T().greenRatio}</span><b id="gv">${g}%</b></span>
+        <input id="gs" type="range" min="5" max="50" step="5" value="${g}"></label>
+      <label class="slider"><span class="row"><span>${T().intensity}</span><b id="kv">${k}</b></span>
+        <input id="ks" type="range" min="0" max="100" step="10" value="${k}">
+        <span class="row muted"><span>${T().intensityLow}</span><span>${T().intensityHigh}</span></span></label>
+      <div class="muted" id="blockStats"></div>
+      <div class="deltas" id="popDelta"></div>`;
+    const hook = (id, key, label, show, fmtV) => {
+      const el = $(id);
+      el.oninput = () => { world[key][b] = +el.value / 100; world.edited[b] = 1; highlight = new Set(); $(show).textContent = fmtV(el.value); scheduleRender(); };
+      el.onchange = () => log(T().logSlider(b, label, fmtV(el.value)));
+    };
+    hook('#gs', 'green', T().greenRatio, '#gv', v => v + '%');
+    hook('#ks', 'intensity', T().intensity, '#kv', v => v);
+  }
+  $('#popX').onclick = () => { selected = -1; buildBlockPanel(); drawMap(); };
+  // Place it beside the block, on whichever side has room.
+  const W = map.clientWidth, px = (B.cx + 0.5) / N * W, py = (B.cy + 0.5) / N * W;
+  P.classList.remove('hidden');
+  const pw = P.offsetWidth, ph = P.offsetHeight;
+  const left = px < W / 2 ? Math.min(W - pw - 8, px + 30) : Math.max(8, px - pw - 30);
+  P.style.left = left + 'px'; P.style.top = Math.max(8, Math.min(W - ph - 8, py - ph / 2)) + 'px';
+  updatePopup();
+}
+function updatePopup() {
+  if (selected < 0 || !$('#blockStats')) return;
+  $('#blockStats').textContent = T().blockStats(fields.blockLst[selected], fields.blockFlood[selected], fields.pop[selected]);
+  const r = fields.read, o = popBase || r, L = T().popRows;
+  const row = (name, now, d, good) => `<span>${name}</span><b>${now}</b><i class="${d === 0 ? '' : good ? 'up' : 'down'}">${d === 0 ? '·' : sgn(d, 1)}</i>`;
+  const pct = v => Math.round(v * 100) + '%';
+  $('#popDelta').innerHTML =
+    row(L.housed, pct(r.pop / world.popTarget), Math.round((r.pop - o.pop) / world.popTarget * 1000) / 10, r.pop >= o.pop) +
+    row(L.jobs, pct(r.jobsShare), Math.round((r.jobsShare - o.jobsShare) * 1000) / 10, r.jobsShare >= o.jobsShare) +
+    row(L.heat, r.lst.toFixed(1) + '°', Math.round((r.lst - o.lst) * 100) / 100, r.lst <= o.lst) +
+    row(L.flood, r.flood.toFixed(2), Math.round((r.flood / o.flood - 1) * 1000) / 10, r.flood <= o.flood) +
+    row(L.commute, r.commute.toFixed(1) + "'", Math.round((r.commute - o.commute) * 10) / 10, r.commute <= o.commute);
 }
 let pending = false;
 const scheduleRender = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; renderAll(); }); } };
 
 // ---------- Small maps ----------
-const LAYER_KEYS = ['lst', 'flood', 'access', 'impact'];
-const LAYER_RAMPS = ['diverging', 'floodBlue', 'access', 'linearRed'];
+// Four maps, each moved by several levers: heat, ponding, commute minutes, people per block.
+const LAYER_KEYS = ['lst', 'flood', 'commute', 'density'];
+const LAYER_RAMPS = ['diverging', 'floodBlue', 'access', 'density'];
 function buildSmalls() {
   $('#smalls').innerHTML = LAYER_KEYS.map((key, k) => `
     <figure class="neatline small">
@@ -121,10 +156,12 @@ function drawMap() {
     if (fields.cover[i] !== C_WATER) continue;
     ctx.beginPath(); ctx.arc((i % N + 0.5) * c, (((i / N) | 0) + 0.5) * c, c * 0.78, 0, 2 * Math.PI); ctx.fill();
   }
+  drawFlow(ctx, c);
   drawHalos(ctx, c);
   drawRoads(ctx, c);
   drawSelection(ctx, c);
   drawFacilities(ctx, c);
+  drawDiagRings(ctx, c);
   drawHighlight();
 }
 
@@ -147,6 +184,20 @@ function drawRoads(ctx, c) {
     }
     for (const [r, lv] of [[11, 1], [23, 1], [37, 2]])
       stroke(lv, () => { ctx.beginPath(); ctx.arc((CENTER[0] + 0.5) * c, (CENTER[1] + 0.5) * c, r * c, 0, 2 * Math.PI); });
+  }
+}
+
+// Surface runoff network: each cell's flow drawn to the cell it drains into, thicker where more
+// water converges. Where flow exceeds the drains (PIPE_CAP) the line turns dark: that is where it floods.
+function drawFlow(ctx, c) {
+  const th = fields.thru, recv = world.base.recv;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < N * N; i++) {
+    const t = th[i]; if (t < 5 || recv[i] < 0) continue;
+    const j = recv[i], over = t > PIPE_CAP;
+    ctx.strokeStyle = over ? 'rgba(14,42,92,.85)' : 'rgba(70,130,190,.55)';
+    ctx.lineWidth = Math.min(c * 1.1, c * 0.14 * Math.sqrt(t / 5));
+    ctx.beginPath(); ctx.moveTo((i % N + 0.5) * c, (((i / N) | 0) + 0.5) * c); ctx.lineTo((j % N + 0.5) * c, (((j / N) | 0) + 0.5) * c); ctx.stroke();
   }
 }
 
@@ -218,7 +269,6 @@ function drawReadouts() {
   $('#constraints').innerHTML =
     meter(T().popLabel, share, share >= 0.98, Math.round(share * 100) + '%') +
     meter(T().jobsLabel, js, js >= 1, Math.round(js * 100) + '%') +
-    meter(T().budgetLabel, R.budget / 200, R.budget >= 0, '¥' + Math.round(R.budget)) +
     `<div class="meter"><div class="row"><span>${T().facLabel}</span><b>${counts}</b></div></div>`;
 }
 
@@ -266,11 +316,27 @@ function log(msg, cls = '', suggestion = null) {
 
 // HIGHLIGHT (SciVisColor technique): dim everything except the blocks the agent suggests.
 let highlight = new Set();
+// Diagnosis rings: hottest (dark red) and wettest (dark blue) residential blocks, until the first edit.
+let diagRings = null;
+function drawDiagRings(ctx, c) {
+  if (!diagRings) return;
+  ctx.lineWidth = Math.max(2, c * 0.4); ctx.setLineDash([c * 1.2, c * 0.6]);
+  for (const [list, col] of [[diagRings.hot, '#8A0B14'], [diagRings.wet, '#0E2A5C']]) {
+    ctx.strokeStyle = col;
+    for (const b of list) {
+      const B = world.base.blocks[b], r = Math.sqrt(B.cells.length / Math.PI) * c + c * 2;
+      ctx.beginPath(); ctx.arc((B.cx + 0.5) * c, (B.cy + 0.5) * c, r, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+  ctx.setLineDash([]);
+}
 function drawHighlight() {
   if (!highlight.size) return;
   const ctx = map.getContext('2d'), c = map.width / N, bo = world.base.blockOf;
-  ctx.fillStyle = 'rgba(110,104,92,.6)';
-  for (let i = 0; i < N * N; i++) if (!(bo[i] >= 0 && highlight.has(bo[i]))) ctx.fillRect((i % N) * c, ((i / N) | 0) * c, c + 0.5, c + 0.5);
+  // One path, one fill: per-cell translucent rects overlap at their edges and leave a grid of seams.
+  ctx.fillStyle = 'rgba(110,104,92,.6)'; ctx.beginPath();
+  for (let i = 0; i < N * N; i++) if (!(bo[i] >= 0 && highlight.has(bo[i]))) ctx.rect((i % N) * c, ((i / N) | 0) * c, c + 0.5, c + 0.5);
+  ctx.fill();
 }
 
 // ---------- Agent view: the evaluation takes over the working area ----------
@@ -337,7 +403,7 @@ async function openAgentView() {
   // 4. Suggest
   avStep(picks.length ? T().av.s4 : T().av.none);
   drawField(big, fields.lst, 'diverging');
-  circleBlocks(big, picks.map(p => p.b), '#2F2D28');   // ink, not ochre: ochre never goes inside a neatline
+  circleBlocks(big, picks.map(p => p.b).filter(b => b >= 0), '#2F2D28');   // ink, not ochre: ochre never goes inside a neatline
   $('#avCap').textContent = T().layers[0];
   picks.forEach((c, k) => {
     scatterDot(c, true, base.read, true);
@@ -366,7 +432,7 @@ function renderAll() {
   $('#nm-lst').textContent = revealed ? T().layerObserved : T().layers[0];
   $('#nm-lst').closest('figure').classList.toggle('observed', revealed);
   drawReadouts(); drawTrade();
-  if (selected >= 0 && $('#blockStats')) $('#blockStats').textContent = T().blockStats(fields.blockLst[selected], fields.blockFlood[selected], fields.pop[selected]);
+  updatePopup();
   const short = fields.read.pop < world.popTarget * 0.98;
   if (short && !warnedPop) log(T().logPopShort, 'warn');
   warnedPop = short;
@@ -378,13 +444,13 @@ function cellAt(e) {
   return [(e.clientX - r.left) / r.width * N, (e.clientY - r.top) / r.height * N];
 }
 map.addEventListener('pointerdown', e => {
+  diagRings = null;
   const [x, y] = cellAt(e);
   if (x < 0 || y < 0 || x >= N || y >= N) return;
   if (tool === 'select') {
     selected = world.base.blockOf[Math.floor(y) * N + Math.floor(x)];
-    buildBlockPanel(); drawMap();
-    if (selected >= 0 && $('#blockStats')) $('#blockStats').textContent = T().blockStats(fields.blockLst[selected], fields.blockFlood[selected], fields.pop[selected]);
-    return;
+    if (selected < 0) { buildBlockPanel(); drawMap(); return; }
+    drawMap(); buildBlockPanel(); return;
   }
   const near = world.facilities.findIndex(F => Math.hypot(F.x - x, F.y - y) < 2.5);
   if (near >= 0) { const [F] = world.facilities.splice(near, 1); log(T().logFacRemoved(T().tools[F.type])); }
@@ -392,11 +458,10 @@ map.addEventListener('pointerdown', e => {
     // Siting rules first, then money: every refusal says why, so the rule is the lesson.
     const why = siteCheck(world, tool, x, y);
     if (why) { log(T().site[why], 'warn'); return; }
-    if (fields.read.budget < FAC[tool].cost) { log(T().site.budget('¥' + FAC[tool].cost), 'warn'); return; }
     const b = blockAtPoint(world, x, y);
     world.facilities.push({ type: tool, x, y }); log(T().logFacPlaced(T().tools[tool], b));
   }
-  highlight = new Set(); renderAll();
+  highlight = new Set(); renderAll(); buildToolbar();
 });
 
 // ---------- Controls ----------
@@ -404,7 +469,7 @@ document.querySelectorAll('#mode .block').forEach(b => b.onclick = () => {
   mode = b.dataset.mode;
   document.querySelectorAll('#mode .block').forEach(o => o.classList.toggle('on', o === b));
   if (!worlds[mode]) worlds[mode] = mode === 'city' ? makeCityWorld() : makeWorld();
-  world = worlds[mode]; highlight = new Set(); history.length = 0; selected = -1; buildBlockPanel();
+  world = worlds[mode]; highlight = new Set(); diagRings = null; history.length = 0; selected = -1; buildBlockPanel(); buildToolbar();
   if (mode !== 'city' && revealed) { revealed = false; $('#reveal').textContent = T().reveal; }
   log(T().logMode(b.textContent, world.nb));
   renderAll();
@@ -445,4 +510,4 @@ addEventListener('resize', () => { sizeLayout(); sizeMap(); drawMap(); drawTrade
 applyStrings(); buildToolbar(); buildBlockPanel(); buildSmalls(); sizeLayout(); sizeMap(); renderAll();
 log(T().logMode(T().modeCity, world.nb)); log(T().logEngine(lastMs.toFixed(0)));
 log(T().logFit(fields.read.r.toFixed(2)), 'good');
-{ const d = diagnose(world, fields); log(T().diag(d.hot, d.wet), 'warn'); highlight = new Set([...d.hot, ...d.wet]); drawMap(); }
+{ const d = diagnose(world, fields); log(T().diag(d.hot, d.wet), 'warn'); diagRings = { hot: d.hot, wet: d.wet }; drawMap(); }

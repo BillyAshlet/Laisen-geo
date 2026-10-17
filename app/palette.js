@@ -15,6 +15,7 @@ const RAMPS = {
   floodBlue: ['#F4F8FB', '#C6DCEE', '#86B4DA', '#4682BE', '#1D518F', '#0E2A5C'],
   access: ['#F7F3E3', '#D6E6C4', '#9FCBA8', '#5FA69E', '#2F7A7C', '#174E5A'],
   linearRed: ['#F6DCD3', '#E89A78', '#C34A3B', '#8C2131', '#4A0E1E'],
+  density: ['#F6F3F8', '#DCD2E6', '#B3A1CB', '#8670A8', '#5A447F', '#33224F'],
 };
 
 const hex2rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));

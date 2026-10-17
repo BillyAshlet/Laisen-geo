@@ -36,13 +36,15 @@ const popFactor = k => 0.4 + 1.6 * k;
 // Strong enough that one facility shifts LST by a few degrees within ~1 km (Rin: park cooling
 // reaches 100–300 m, large or connected parks 300–500 m; the halo here is the e-folding radius).
 const FAC = {
-  factory: { foot: 1.6, cover: C_BUILT, heat: 2.4, heatR: 5, cost: 30 },   // hot plant + ~1 km halo; earns money
-  park:    { foot: 2.6, cover: C_GREEN, heat: -2.2, heatR: 4, cost: 20 },  // cooling island, ~800 m
-  pond:    { foot: 2.4, cover: C_WET,   heat: -1.6, heatR: 3, cost: 25 },  // wetland / retention: stores runoff
-  station: { foot: 0.8, cover: C_BUILT, heat: 0, heatR: 0, cost: 40 },     // transit stop: fast trips nearby
+  factory: { foot: 2.0, cover: C_BUILT, heat: 2.4, heatR: 5 },   // hot plant + ~1 km halo; brings jobs
+  park:    { foot: 2.6, cover: C_GREEN, heat: -2.2, heatR: 4 },  // cooling island, ~800 m
+  pond:    { foot: 2.4, cover: C_WET,   heat: -1.6, heatR: 3 },  // wetland / retention: intercepts runoff
+  station: { foot: 0.8, cover: C_BUILT, heat: 0, heatR: 0 },     // transit stop: fast trips nearby
 };
-// Budget: start money plus what factories earn; every facility costs money.
-const START_BUDGET = 60, INCOME_PER_OUTPUT = 40;
+// No money: the scarce resource is LAND. Every footprint displaces homes, and the plan must
+// still house everyone and provide jobs. Transit is limited to one line's worth of stops.
+const MAX_STATIONS = 3;
+const JOBS_GOAL = 0.4;     // jobs needed per resident
 
 // Siting rules: why a facility can or can't go somewhere. Returns null if fine, else a reason key.
 function siteCheck(w, type, x, y) {
@@ -60,11 +62,12 @@ function siteCheck(w, type, x, y) {
   };
   if (type === 'factory' && !nearRoad(2, 1.2)) return 'needFreight';         // goods go out by expressway
   if (type === 'station' && !nearRoad(1, 0.3)) return 'needRoad';            // stops sit on a road
+  if (type === 'station' && w.facilities.filter(F => F.type === 'station').length >= MAX_STATIONS) return 'stationLimit';
   if (type === 'pond' && (b.z[i] - b.zlo) / (b.zhi - b.zlo) > 0.4) return 'tooHigh';   // water must flow to it
   return null;
 }
 const FACTORY_NUISANCE_KM = 1.5;   // pollution / noise decay distance
-const STATION_KM = 1.5, TRANSIT_KMH = 45, TRANSIT_WAIT = 6;   // walk-in radius, line speed, wait (min)
+const STATION_KM = 2, TRANSIT_KMH = 60, TRANSIT_WAIT = 2;   // walk-in radius, line speed, wait (min): a metro line
 
 const hash = i => { const s = Math.sin(i * 12.9898 + 4.1) * 43758.5453; return s - Math.floor(s); };
 
@@ -216,6 +219,7 @@ function newWorld(base) {
     road: new Uint8Array(nb).fill(1),
     locked: new Uint8Array(nb), edited: new Uint8Array(nb), real: null,
     facilities: [],          // {type, x, y} in cell coordinates
+    rain: 1,                 // rain scenario index into RAIN
     popTarget: 0,            // set from the starting layout: the city must keep housing everyone
   };
 }
@@ -306,14 +310,15 @@ function windowMean(src, r) {
 // 1. Land surface temperature (relative). Local source + contiguous built-up
 //    context within ~3 km + a few relaxation steps so heat spreads to neighbours
 //    and green/water cool their surroundings (~0.5–1 km reach).
-function heat(w, cover) {
+// traffic: city-wide driving relative to a 15-minute commute; scales road heat (more km driven, hotter roads).
+function heat(w, cover, traffic = 1) {
   const src = new Float32Array(N * N), built = new Float32Array(N * N), bo = w.base.blockOf;
   const plant = new Uint8Array(N * N);
   for (const F of w.facilities) if (F.type === 'factory') footprint(F, i => plant[i] = 1);
   for (let i = 0; i < N * N; i++) {
     const c = cover[i], b = bo[i];
     built[i] = c === C_BUILT || c === C_ROAD ? 1 : 0;
-    if (c !== C_BUILT) { src[i] = HEAT_COVER[c]; continue; }
+    if (c !== C_BUILT) { src[i] = c === C_ROAD ? HEAT_COVER[c] * traffic : HEAT_COVER[c]; continue; }
     src[i] = plant[i] ? HEAT_BUILT[IND] : b >= 0 && isUrban(w.use[b]) ? heatBuilt(w.use[b], w.intensity[b]) : HEAT_BUILT[RES];
   }
   const ctx = windowMean(built, 15);
@@ -342,23 +347,38 @@ function heat(w, cover) {
 
 // 2. Relative waterlogging susceptibility. Runoff follows D8 down the DEM and
 //    accumulates; green and wetland soak some up; low, wet, hard cells score high.
+// Rain scenarios (rough return-period levels) scale the runoff every cell produces.
+const RAIN = [0.6, 1, 1.7];          // 小雨 / 暴雨 / 特大暴雨
+// Each cell's drains can take this much flow; anything above it ponds. This threshold is what
+// makes waterlogging non-linear: fine most of the time, then suddenly bad where flow converges.
+const PIPE_CAP = 9;
+// A pond / wetland intercepts every flow that passes within POND_REACH cells, up to its volume.
+const POND_REACH = 3, POND_VOLUME = 90;
 function flood(w, cover) {
-  const b = w.base, thru = new Float32Array(N * N), inflow = new Float32Array(N * N);
+  const b = w.base, rain = RAIN[w.rain ?? 1];
+  const thru = new Float32Array(N * N), inflow = new Float32Array(N * N);
+  // Which pond (if any) intercepts each cell's flow.
+  const ponds = w.facilities.filter(F => F.type === 'pond');
+  const zone = new Int16Array(N * N).fill(-1), left = ponds.map(() => POND_VOLUME);
+  ponds.forEach((F, p) => {
+    for (let y = Math.max(0, Math.floor(F.y - POND_REACH)); y <= Math.min(N - 1, Math.ceil(F.y + POND_REACH)); y++)
+      for (let x = Math.max(0, Math.floor(F.x - POND_REACH)); x <= Math.min(N - 1, Math.ceil(F.x + POND_REACH)); x++)
+        if ((x + 0.5 - F.x) ** 2 + (y + 0.5 - F.y) ** 2 <= POND_REACH * POND_REACH) zone[y * N + x] = p;
+  });
+  let caught = 0;
   for (const i of b.order) {
     if (b.sink[i]) continue;
     const c = cover[i];
-    const total = RUNOFF[c] + inflow[i];
+    const total = RUNOFF[c] * rain + inflow[i];
     thru[i] = total;
-    const out = Math.max(0, total - STORE[c]);
+    let out = Math.max(0, total - STORE[c]);
+    const p = zone[i];
+    if (p >= 0 && left[p] > 0) { const take = Math.min(out, left[p]); left[p] -= take; out -= take; caught += take; }
     if (b.recv[i] >= 0) inflow[b.recv[i]] += out;
   }
   const f = new Float32Array(N * N);
-  for (let i = 0; i < N * N; i++) {
-    const low = 1 - (b.z[i] - b.zlo) / (b.zhi - b.zlo);
-    // sqrt rather than log: keeps enough contrast that intercepting upstream flow shows up.
-    f[i] = b.sink[i] ? 0 : Math.sqrt(thru[i]) * (0.4 + 0.6 * low) * (0.3 + 0.7 * IMPERV[cover[i]]);
-  }
-  return f;
+  for (let i = 0; i < N * N; i++) f[i] = b.sink[i] ? 0 : Math.max(0, thru[i] - PIPE_CAP);
+  return { f, thru, caught };
 }
 
 // 3. Accessibility (Hansen) on the street-block graph. Travel time between
@@ -392,7 +412,7 @@ function travelTimes(w) {
 
 // Jobs per built cell by use; each factory adds a fixed number of jobs where it stands.
 const JOBS_PER_CELL = [0.1, 1];
-const FACTORY_JOBS = 50;
+const FACTORY_JOBS = 400;   // an industrial park's worth of jobs
 
 // Travel times depend only on road densities and the block layout, so cache them:
 // slider moves and facility placements (what the agent tries hundreds of times) skip Dijkstra.
@@ -405,7 +425,7 @@ function cachedTravelTimes(w) {
 
 function evaluate(w) {
   const B = w.nb, blocks = w.base.blocks, bo = w.base.blockOf, cover = coverOf(w);
-  const lst = heat(w, cover), fl = flood(w, cover), road = cachedTravelTimes(w);
+  const { f: fl, thru, caught } = flood(w, cover), road = cachedTravelTimes(w);
 
   // People and jobs per block, from what is actually built there (facility footprints take land).
   const pop = new Float32Array(B), jobs = new Float32Array(B), builtN = new Float32Array(B);
@@ -426,7 +446,7 @@ function evaluate(w) {
   };
 
   // Hansen accessibility to jobs; mean commute from gravity shares.
-  const acc = new Float32Array(B), workers = new Float32Array(B);
+  const acc = new Float32Array(B), workers = new Float32Array(B), commuteB = new Float32Array(B);
   let commuteSum = 0, popSum = 0;
   for (let i = 0; i < B; i++) {
     let A = 0, tw = 0, L = 0;
@@ -435,9 +455,12 @@ function evaluate(w) {
       const g = Math.exp(-t / BETA);
       A += jobs[j] * g; tw += jobs[j] * g * t; L += pop[j] * g;
     }
-    acc[i] = A; workers[i] = L;
+    acc[i] = A; workers[i] = L; commuteB[i] = A > 0 ? tw / A : 60;
     if (pop[i] > 0 && A > 0) { commuteSum += pop[i] * tw / A; popSum += pop[i]; }
   }
+  // Heat comes after travel: a spread-out city drives more, and its roads run hotter.
+  const meanCommute = popSum ? commuteSum / popSum : 0;
+  const lst = heat(w, cover, Math.max(0.6, Math.min(1.8, meanCommute / 15)));
 
   // Industrial impact: pollution and noise decaying ~1.5 km from each factory.
   const impact = new Float32Array(N * N);
@@ -461,8 +484,7 @@ function evaluate(w) {
   let output = 0;
   for (const F of plants) { const b = blockAtPoint(w, F.x, F.y); output += 0.5 + 0.5 * Math.min(1, (b >= 0 ? workers[b] : 0) / 800); }
   let totalPop = 0, totalJobs = 0; for (let b = 0; b < B; b++) { totalPop += pop[b]; totalJobs += jobs[b]; }
-  let spent = 0; for (const F of w.facilities) spent += FAC[F.type].cost;
-  const budget = START_BUDGET + output * INCOME_PER_OUTPUT - spent;
+
   const counts = { factory: 0, park: 0, pond: 0, station: 0 };
   for (const F of w.facilities) counts[F.type]++;
 
@@ -477,11 +499,11 @@ function evaluate(w) {
     r = sab / Math.sqrt(saa * sbb);
   }
   const read = {
-    r, pop: totalPop, jobs: totalJobs, budget,
-    jobsShare: totalJobs / (0.5 * totalPop || 1),   // goal: jobs for half the population
+    r, pop: totalPop, jobs: totalJobs,
+    jobsShare: totalJobs / (JOBS_GOAL * totalPop || 1),   // 100% = the jobs goal is met
     lst: 26 + 10 * h / n,                       // rough °C mapping; calibrate with Rin's LST
     flood: f / n,
-    commute: popSum ? commuteSum / popSum : 0,  // minutes
+    commute: meanCommute,                       // minutes
     output,
     complaints: Math.round(comp / n * 100),
   };
@@ -492,11 +514,16 @@ function evaluate(w) {
     w.lstRef = m / k; w.lstSd = Math.sqrt(q / k - w.lstRef ** 2);
   }
   const lstRef = w.lstRef, lstSd = w.lstSd;
-  let accMax = 0; for (const v of acc) accMax = Math.max(accMax, v);
-  if (w.accRef == null) w.accRef = accMax || 1;
-  // Fields for display on fixed scales (so changes stay visible between edits).
-  const accCell = new Float32Array(N * N);
-  for (let i = 0; i < N * N; i++) accCell[i] = bo[i] >= 0 ? Math.min(1, acc[bo[i]] / w.accRef) : 0;
+  // Fields for display on fixed scales (so changes stay visible between edits):
+  // commute in minutes (5 → 35), population density relative to this world's starting peak.
+  const dens = blocks.map((Bk, b) => pop[b] / Bk.cells.length);
+  if (w.densRef == null) w.densRef = Math.max(...dens) || 1;
+  const commuteCell = new Float32Array(N * N), densCell = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) {
+    const b = bo[i]; if (b < 0) continue;
+    commuteCell[i] = pop[b] > 0 ? Math.max(0, Math.min(1, (commuteB[b] - 5) / 30)) : 0;
+    densCell[i] = Math.min(1, dens[b] / w.densRef);
+  }
   // Per-block mean LST and flood (same °C mapping as the readout), for the block panel.
   const blockLst = new Float32Array(B), blockFlood = new Float32Array(B), bn = new Float32Array(B);
   for (let i = 0; i < N * N; i++) { const b = bo[i]; if (b < 0) continue; blockLst[b] += lst[i]; blockFlood[b] += fl[i]; bn[b]++; }
@@ -507,8 +534,9 @@ function evaluate(w) {
     // mean (fixed per world, so later edits still shift the colours). Same rule as the observed
     // LST in the reveal, so the two tiles compare like with like.
     lst: lst.map(v => Math.max(0, Math.min(1, 0.5 + (v - lstRef) / (4 * lstSd)))),
-    flood: fl.map(v => Math.min(1, v / 6)),
-    access: accCell,
+    flood: fl.map(v => Math.min(1, Math.sqrt(v / 40))),
+    thru, caught,
+    commute: commuteCell, density: densCell, commuteB,
     impact: impact.map(v => Math.min(1, v / 2)),
   };
 }

@@ -191,4 +191,20 @@ figcaption {
 .card { background: #fff; border: 1.5px solid var(--neat); padding: 10px 12px; font-size: 13px; display: grid; gap: 8px; animation: avIn .3s ease-out; }
 .card .n { font: 500 12px var(--mono); color: var(--ochre); }
 .card .block { justify-self: start; }
+.palette h2 { margin-top: 10px; }
+#rain .block { padding: 7px 4px; font-size: 12px; }
 .tool-cost { margin-left: auto; font: 11px var(--mono); opacity: .75; }
+
+/* ---------- Block popup ---------- */
+.popup { position: absolute; z-index: 3; width: 250px; background: #fff; border: 1.5px solid var(--neat);
+  box-shadow: 0 6px 20px rgba(47,45,40,.18); padding: 10px 12px; animation: avIn .15s ease-out; }
+.popup.hidden { display: none; }
+.popup .head { justify-content: space-between; }
+.popup .head b { flex: 1; font-weight: 500; }
+.popup .x { border: 0; background: none; font-size: 18px; line-height: 1; cursor: pointer; color: var(--ink-2); }
+.popup .x:hover { color: var(--ink); }
+.deltas { display: grid; grid-template-columns: 1fr auto 52px; gap: 3px 8px; font-size: 12px;
+  border-top: 1px solid var(--rule); padding-top: 8px; align-items: baseline; }
+.deltas b { font: 500 12px var(--mono); text-align: right; }
+.deltas i { font: 12px var(--mono); font-style: normal; text-align: right; color: var(--ink-2); }
+.deltas i.up { color: #4E8A4A; } .deltas i.down { color: #B5462A; }

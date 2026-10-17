@@ -48,7 +48,7 @@ async function runAgent(w, hooks) {
   let tried = 0, rejected = 0;
   const consider = (c, r) => {
     tried++; c.r = r; c.gain = baseScore - score(r);
-    const ok = r.pop >= minPop && r.budget >= 0;
+    const ok = r.pop >= minPop;
     if (!ok) rejected++; else cands.push(c);
     onCand(c, ok, base.read);
   };
@@ -56,7 +56,7 @@ async function runAgent(w, hooks) {
   // Count what we are about to try, so the view can show progress.
   const editableBlocks = [...Array(w.nb).keys()].filter(b => editable(w, b));
   const openBlocks = [...Array(w.nb).keys()].filter(b => !w.locked[b]);
-  onTotal(editableBlocks.length * 4 + w.facilities.length * openBlocks.length + 3 * openBlocks.length);
+  onTotal(editableBlocks.length * 4 + w.facilities.length * openBlocks.length + 2 * openBlocks.length + 50);
 
   // 1. One step on one block's sliders.
   for (const [n, b] of editableBlocks.entries()) {
@@ -84,13 +84,18 @@ async function runAgent(w, hooks) {
     F.x = from.x; F.y = from.y;
     await new Promise(res => setTimeout(res, 0));
   }
-  // 3. Build one new park, pond or factory in every open block where it is allowed.
+  // 3. Build one new park or factory at every open block centre, and one new pond on the
+  //    runoff network (ponds only work where flow converges, so try points on the flow lines).
+  const sites = { park: [], factory: [], pond: [] };
+  for (const b of openBlocks) { const B = w.base.blocks[b]; sites.park.push([B.cx + 0.5, B.cy + 0.5]); sites.factory.push([B.cx + 0.5, B.cy + 0.5]); }
+  const th = base.thru; const flowCells = [];
+  for (let i = 0; i < N * N; i++) if (th[i] > 12 && w.base.blockOf[i] >= 0) flowCells.push(i);
+  for (let k = 0; k < flowCells.length; k += Math.max(1, Math.floor(flowCells.length / 50))) sites.pond.push([flowCells[k] % N + 0.5, ((flowCells[k] / N) | 0) + 0.5]);
   for (const type of ['park', 'pond', 'factory']) {
-    for (const b of openBlocks) {
-      const B = w.base.blocks[b], x = B.cx + 0.5, y = B.cy + 0.5;
+    for (const [x, y] of sites[type]) {
       if (siteCheck(w, type, x, y)) { tried++; continue; }
       w.facilities.push({ type, x, y });
-      consider({ kind: 'build', type, to: { x, y }, b }, evaluate(w).read);
+      consider({ kind: 'build', type, to: { x, y }, b: blockAtPoint(w, x, y) }, evaluate(w).read);
       w.facilities.pop();
     }
     await new Promise(res => setTimeout(res, 0));
