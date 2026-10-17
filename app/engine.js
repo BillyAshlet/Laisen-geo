@@ -1,43 +1,46 @@
 // ENGINE — mechanisms from BRIEF.md.
-// Two resolutions: physics runs on a fine grid (N × N cells, 200 m each);
-// students act on STREET BLOCKS, the areas enclosed by arterial roads (and the river).
-// Every indicator depends on position (neighbours, flow paths, distances),
-// so swapping two blocks changes the result: an arrangement problem, not a sum.
+// Three layers, like real planning:
+//  1. BASE (fixed): terrain, river, existing green/water, each street block's use (residential / commercial);
+//  2. BLOCK CONTROLS (sliders, per street block): green ratio and development intensity —
+//     the indicators of a Chinese regulatory detailed plan (控规: 绿地率, 开发强度/容积率);
+//  3. FACILITIES (points, placed anywhere): factory, park, wetland/retention pond, transit station.
+// Physics runs on a fine grid (N × N cells, 200 m). Street blocks are what arterial roads enclose.
+// Every indicator depends on position, so where a change happens matters as much as how big it is.
 
 const N = 120;            // 120 × 120 cells = 24 km square
 const CELL_KM = 0.2;
 
-// Block functions (student choices). Order matches STRINGS.types.
+// Block uses. RES and COM are urban (editable); the rest are natural/open base (fixed).
 const RES = 0, COM = 1, IND = 2, PARK = 3, WET = 4, WATER = 5, FARM = 6;
+const isUrban = u => u === RES || u === COM;
 // Physical cover of each fine cell. C_OUT: outside the study area (Changchun mode).
 const C_BUILT = 0, C_GREEN = 1, C_FARM = 2, C_WATER = 3, C_WET = 4, C_OUT = 5, C_ROAD = 6;
-
-// What a block of each function looks like from above (cover fractions:
-// built, green, farm, water, wetland). Rough, to be checked with Rin.
-const TEMPLATE = [
-  [0.75, 0.25, 0, 0, 0],      // residential
-  [0.90, 0.10, 0, 0, 0],      // commercial / public
-  [0.95, 0.05, 0, 0, 0],      // industrial
-  [0.10, 0.85, 0, 0.05, 0],   // park
-  [0, 0.15, 0, 0.25, 0.60],   // wetland
-  [0, 0, 0, 1, 0],            // water
-  [0.05, 0.05, 0.90, 0, 0],   // farmland / open
-];
 
 // Per-cover physical properties (built, green, farm, water, wetland, outside, road).
 const IMPERV = [0.9, 0.1, 0.15, 0, 0, 0.15, 0.95];
 // Runoff coefficients (GB 50014 via Rin): hard 0.85–0.95, green 0.10–0.20.
 const RUNOFF = [0.9, 0.15, 0.3, 0, 0.05, 0, 0.9];
 const STORE = [0, 0.5, 0.2, 0, 6, 0, 0];   // how much upstream water a cell can soak up
-// Surface heat source by cover; built cells get a function-specific value instead.
-// Green, water and wetland cool by evapotranspiration, so their sources are negative.
-// Outside ≈ peri-urban farmland. Roads: asphalt plus traffic.
+// Surface heat source by cover. Green, water and wetland cool by evapotranspiration
+// (negative sources). Outside ≈ peri-urban farmland. Roads: asphalt plus traffic.
 const HEAT_COVER = [0, -0.25, 0.35, -0.4, -0.35, 0.35, 1.2];
-const HEAT_BUILT = [1.0, 1.2, 1.5];        // residential, commercial, industrial
-// Factories are point facilities, not zoning: a hot footprint plus a radial halo.
-const FACTORY_FOOT = 1.6;                  // footprint radius, cells (~300 m)
-const FACTORY_HEAT = 1.4, FACTORY_HEAT_R = 5;   // peak extra heat, e-folding radius in cells (~1 km)
-const FACTORY_NUISANCE_KM = 1.5;           // pollution / noise decay distance
+// Built cells: base heat by use, scaled by development intensity (taller, denser, more waste heat).
+const HEAT_BUILT = [1.0, 1.2, 1.5];
+const heatBuilt = (use, k) => HEAT_BUILT[use] * (0.7 + 0.6 * k);
+// People per built cell (0.04 km²) by use, scaled by intensity: low-rise 0.4× … high-rise 2×.
+const DENSITY = [1, 0.25];
+const popFactor = k => 0.4 + 1.6 * k;
+
+// ---------- Facilities ----------
+// Each has a footprint (cells it occupies, by radius) and a radial effect.
+const FAC = {
+  factory: { foot: 1.6, cover: C_BUILT, heat: 1.4, heatR: 5 },          // hot plant + ~1 km halo
+  park:    { foot: 2.2, cover: C_GREEN, heat: -0.9, heatR: 4 },         // cooling island, ~800 m
+  pond:    { foot: 2.0, cover: C_WET,   heat: -0.7, heatR: 3 },         // wetland / retention: stores runoff
+  station: { foot: 0.8, cover: C_BUILT, heat: 0, heatR: 0 },            // transit stop: fast trips nearby
+};
+const FACTORY_NUISANCE_KM = 1.5;   // pollution / noise decay distance
+const STATION_KM = 1.5, TRANSIT_KMH = 45, TRANSIT_WAIT = 6;   // walk-in radius, line speed, wait (min)
 
 const hash = i => { const s = Math.sin(i * 12.9898 + 4.1) * 43758.5453; return s - Math.floor(s); };
 
@@ -183,60 +186,72 @@ function newWorld(base) {
   const nb = base.blocks.length;
   return {
     base, nb,
-    func: new Uint8Array(nb).fill(FARM), road: new Uint8Array(nb).fill(1),
+    use: new Uint8Array(nb).fill(FARM),
+    green: new Float32Array(nb).fill(0.2),      // green ratio 0.05–0.5
+    intensity: new Float32Array(nb).fill(0.5),  // development intensity 0–1
+    road: new Uint8Array(nb).fill(1),
     locked: new Uint8Array(nb), edited: new Uint8Array(nb), real: null,
-    factories: [],          // point facilities {x, y} in cell coordinates, placed anywhere
-    target: { res: Math.round(nb * 0.3), ind: Math.max(2, Math.round(nb * 0.08)) },
+    facilities: [],          // {type, x, y} in cell coordinates
+    popTarget: 0,            // set from the starting layout: the city must keep housing everyone
   };
 }
+const editable = (w, b) => !w.locked[b] && isUrban(w.use[b]);
 
 function makeWorld() {
   const w = newWorld(makeBase(false));
-  // Old town: the blocks inside the inner ring are a locked historical core.
+  // Inside the outer ring: urban blocks (mostly residential, some commercial).
+  // Inner ring: the locked old town. Outside: farmland (fixed base).
   w.base.blocks.forEach((B, b) => {
     const d = Math.hypot(B.cx - CENTER[0], B.cy - CENTER[1]);
-    if (d < 9) { w.locked[b] = 1; w.func[b] = b % 2 ? COM : RES; }
+    if (d < 36) { w.use[b] = b % 4 === 0 ? COM : RES; w.green[b] = 0.2; w.intensity[b] = d < 20 ? 0.6 : 0.4; }
+    if (d < 9) w.locked[b] = 1;
   });
+  w.popTarget = evaluate(w).read.pop;
   return w;
 }
 
 // Changchun mode: cover comes straight from WorldCover until a student edits a block.
-// Blocks get a function from their dominant cover so readouts have "homes" to measure;
-// satellites can't see residential vs commercial, so all built-up blocks start as residential.
+// Built-up blocks become urban (satellites can't tell residential from commercial, so all
+// start residential) with their observed green share as the starting green ratio.
 function makeCityWorld() {
   const base = makeBase(true), w = newWorld(base);
   const realCover = new Uint8Array(N * N);
   for (let i = 0; i < N * N; i++) realCover[i] = base.out[i] ? C_OUT : WC_TO_COVER[CHANGCHUN.worldcover[realIndex(i)]] ?? C_FARM;
-  const COVER_TO_FUNC = [RES, PARK, FARM, WATER, WET];
+  const COVER_TO_USE = [RES, PARK, FARM, WATER, WET];
   base.blocks.forEach((B, b) => {
     const n = [0, 0, 0, 0, 0, 0, 0];
     for (const i of B.cells) n[realCover[i]]++;
     let best = 0; for (let c = 1; c < 5; c++) if (n[c] > n[best]) best = c;
-    w.func[b] = COVER_TO_FUNC[best];
+    w.use[b] = COVER_TO_USE[best];
+    w.green[b] = Math.min(0.5, Math.max(0.05, (n[C_GREEN] + n[C_WET] + n[C_WATER]) / B.cells.length));
+    w.intensity[b] = 0.5;
   });
   w.real = { cover: realCover };
+  w.popTarget = evaluate(w).read.pop;
   return w;
 }
 
-// ---------- Cover from block functions ----------
+// ---------- Cover from block controls + facilities ----------
+// An edited urban block: a share `green` of its cells (picked by a fixed per-cell hash, so
+// raising the slider adds green cell by cell instead of reshuffling) is green; the rest is built.
 function coverOf(w) {
   const cover = new Uint8Array(N * N), bo = w.base.blockOf;
   for (let i = 0; i < N * N; i++) {
     if (w.base.out[i]) { cover[i] = C_OUT; continue; }
     if (w.base.roadCell[i]) { cover[i] = C_ROAD; continue; }
     if (w.base.river[i] || bo[i] < 0) { cover[i] = C_WATER; continue; }
-    if (w.real && !w.edited[bo[i]]) { cover[i] = w.real.cover[i]; continue; }
-    const t = TEMPLATE[w.func[bo[i]]], r = hash(i);
-    let acc = 0, c = 0;
-    for (; c < 5; c++) { acc += t[c]; if (r < acc) break; }
-    cover[i] = Math.min(c, 4);
+    const b = bo[i];
+    if (w.real && !w.edited[b]) { cover[i] = w.real.cover[i]; continue; }
+    const u = w.use[b];
+    cover[i] = isUrban(u) ? (hash(i) < w.green[b] ? C_GREEN : C_BUILT)
+             : u === PARK ? C_GREEN : u === WET ? C_WET : u === WATER ? C_WATER : C_FARM;
   }
-  for (const F of w.factories) footprint(F, i => { if (cover[i] !== C_OUT && cover[i] !== C_ROAD && !w.base.river[i]) cover[i] = C_BUILT; });
+  for (const F of w.facilities) footprint(F, i => { if (cover[i] !== C_OUT && cover[i] !== C_ROAD && !w.base.river[i]) cover[i] = FAC[F.type].cover; });
   return cover;
 }
 
 function footprint(F, fn) {
-  const r = FACTORY_FOOT;
+  const r = FAC[F.type].foot;
   for (let y = Math.max(0, Math.floor(F.y - r)); y <= Math.min(N - 1, Math.ceil(F.y + r)); y++)
     for (let x = Math.max(0, Math.floor(F.x - r)); x <= Math.min(N - 1, Math.ceil(F.x + r)); x++)
       if ((x + 0.5 - F.x) ** 2 + (y + 0.5 - F.y) ** 2 <= r * r) fn(y * N + x);
@@ -269,22 +284,24 @@ function windowMean(src, r) {
 //    and green/water cool their surroundings (~0.5–1 km reach).
 function heat(w, cover) {
   const src = new Float32Array(N * N), built = new Float32Array(N * N), bo = w.base.blockOf;
-  const plant = new Uint8Array(N * N); for (const F of w.factories) footprint(F, i => plant[i] = 1);
+  const plant = new Uint8Array(N * N);
+  for (const F of w.facilities) if (F.type === 'factory') footprint(F, i => plant[i] = 1);
   for (let i = 0; i < N * N; i++) {
-    const c = cover[i];
+    const c = cover[i], b = bo[i];
     built[i] = c === C_BUILT || c === C_ROAD ? 1 : 0;
-    const f = bo[i] >= 0 ? w.func[bo[i]] : RES;
-    src[i] = c === C_BUILT ? (plant[i] ? HEAT_BUILT[IND] : HEAT_BUILT[f <= COM ? f : RES]) : HEAT_COVER[c];
+    if (c !== C_BUILT) { src[i] = HEAT_COVER[c]; continue; }
+    src[i] = plant[i] ? HEAT_BUILT[IND] : b >= 0 && isUrban(w.use[b]) ? heatBuilt(w.use[b], w.intensity[b]) : HEAT_BUILT[RES];
   }
   const ctx = windowMean(built, 15);
   const T0 = src.map((v, i) => v + 0.8 * ctx[i]);
-  // Factories radiate heat in a circle: strongest at the plant, fading over ~1 km.
-  for (const F of w.factories) {
-    const R = FACTORY_HEAT_R, x0 = Math.max(0, Math.floor(F.x - 3 * R)), x1 = Math.min(N - 1, Math.ceil(F.x + 3 * R));
+  // Facilities radiate in a circle: factories heat, parks and ponds cool, strongest at the centre.
+  for (const F of w.facilities) {
+    const { heat: H, heatR: R } = FAC[F.type]; if (!H) continue;
+    const x0 = Math.max(0, Math.floor(F.x - 3 * R)), x1 = Math.min(N - 1, Math.ceil(F.x + 3 * R));
     const y0 = Math.max(0, Math.floor(F.y - 3 * R)), y1 = Math.min(N - 1, Math.ceil(F.y + 3 * R));
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
       const d2 = (x + 0.5 - F.x) ** 2 + (y + 0.5 - F.y) ** 2;
-      T0[y * N + x] += FACTORY_HEAT * Math.exp(-d2 / (R * R));
+      T0[y * N + x] += H * Math.exp(-d2 / (R * R));
     }
   }
   let T = T0.slice(), U = new Float32Array(N * N);
@@ -349,13 +366,12 @@ function travelTimes(w) {
   return t;
 }
 
-// Residents and jobs per km² of block, by function.
-const POP = [1, 0.2, 0, 0, 0, 0, 0.05];
-const JOBS = [0.1, 1, 0.8, 0.05, 0, 0, 0.05];
-const FACTORY_JOBS = 2;   // job units per factory (≈ a 2 km² commercial block)
+// Jobs per built cell by use; each factory adds a fixed number of jobs where it stands.
+const JOBS_PER_CELL = [0.1, 1];
+const FACTORY_JOBS = 50;
 
 // Travel times depend only on road densities and the block layout, so cache them:
-// changing a block's function (the common edit, and what the agent tries hundreds of times) skips Dijkstra.
+// slider moves and facility placements (what the agent tries hundreds of times) skip Dijkstra.
 let ttKey = '', ttCache = null;
 function cachedTravelTimes(w) {
   const key = w.base.blocks.length + ':' + w.road.join('');
@@ -365,48 +381,64 @@ function cachedTravelTimes(w) {
 
 function evaluate(w) {
   const B = w.nb, blocks = w.base.blocks, bo = w.base.blockOf, cover = coverOf(w);
-  const lst = heat(w, cover), fl = flood(w, cover), tt = cachedTravelTimes(w);
-  const area = blocks.map(b => b.cells.length * CELL_KM * CELL_KM);   // km²
+  const lst = heat(w, cover), fl = flood(w, cover), road = cachedTravelTimes(w);
 
-  // Each factory adds jobs to the block it stands in.
-  const extraJobs = new Float32Array(B);
-  for (const F of w.factories) { const b = blockAtPoint(w, F.x, F.y); if (b >= 0) extraJobs[b] += FACTORY_JOBS; }
-  // Hansen accessibility to jobs for every block; mean commute from gravity shares.
+  // People and jobs per block, from what is actually built there (facility footprints take land).
+  const pop = new Float32Array(B), jobs = new Float32Array(B), builtN = new Float32Array(B);
+  for (let i = 0; i < N * N; i++) if (cover[i] === C_BUILT && bo[i] >= 0) builtN[bo[i]]++;
+  for (let b = 0; b < B; b++) {
+    const u = w.use[b]; if (!isUrban(u)) continue;
+    pop[b] = builtN[b] * DENSITY[u] * popFactor(w.intensity[b]);
+    jobs[b] = builtN[b] * JOBS_PER_CELL[u] * popFactor(w.intensity[b]);
+  }
+  for (const F of w.facilities) if (F.type === 'factory') { const b = blockAtPoint(w, F.x, F.y); if (b >= 0) jobs[b] += FACTORY_JOBS; }
+
+  // Transit: blocks within walking distance of a station are linked at line speed.
+  const near = blocks.map(Bk => w.facilities.some(F => F.type === 'station' && Math.hypot(Bk.cx - F.x, Bk.cy - F.y) * CELL_KM < STATION_KM));
+  const tt = (i, j) => {
+    let t = road[i * B + j];
+    if (near[i] && near[j]) t = Math.min(t, TRANSIT_WAIT + Math.hypot(blocks[i].cx - blocks[j].cx, blocks[i].cy - blocks[j].cy) * CELL_KM / TRANSIT_KMH * 60);
+    return t;
+  };
+
+  // Hansen accessibility to jobs; mean commute from gravity shares.
   const acc = new Float32Array(B), workers = new Float32Array(B);
   let commuteSum = 0, popSum = 0;
   for (let i = 0; i < B; i++) {
     let A = 0, tw = 0, L = 0;
     for (let j = 0; j < B; j++) {
-      const t = tt[i * B + j]; if (!isFinite(t)) continue;        // unreachable (an isolated block)
-      const g = Math.exp(-t / BETA), jobs = JOBS[w.func[j]] * area[j] + extraJobs[j];
-      A += jobs * g; tw += jobs * g * t; L += POP[w.func[j]] * area[j] * g;
+      const t = tt(i, j); if (!isFinite(t)) continue;        // unreachable (an isolated block)
+      const g = Math.exp(-t / BETA);
+      A += jobs[j] * g; tw += jobs[j] * g * t; L += pop[j] * g;
     }
     acc[i] = A; workers[i] = L;
-    const p = POP[w.func[i]] * area[i];
-    if (p > 0 && A > 0) { commuteSum += p * tw / A; popSum += p; }
+    if (pop[i] > 0 && A > 0) { commuteSum += pop[i] * tw / A; popSum += pop[i]; }
   }
 
   // Industrial impact: pollution and noise decaying ~1.5 km from each factory.
   const impact = new Float32Array(N * N);
+  const plants = w.facilities.filter(F => F.type === 'factory');
   for (let i = 0; i < N * N; i++) {
     const x = i % N + 0.5, y = ((i / N) | 0) + 0.5;
     let s = 0;
-    for (const F of w.factories) s += Math.exp(-Math.hypot(x - F.x, y - F.y) * CELL_KM / FACTORY_NUISANCE_KM);
+    for (const F of plants) s += Math.exp(-Math.hypot(x - F.x, y - F.y) * CELL_KM / FACTORY_NUISANCE_KM);
     impact[i] = s;
   }
 
-  // Readouts, over the places people live (built cells in residential blocks).
+  // Readouts, weighted by where people live.
   let n = 0, h = 0, f = 0, comp = 0;
   for (let i = 0; i < N * N; i++) {
-    if (cover[i] !== C_BUILT || bo[i] < 0 || w.func[bo[i]] !== RES) continue;
-    n++; h += lst[i]; f += fl[i]; comp += impact[i];
+    if (cover[i] !== C_BUILT || bo[i] < 0 || w.use[bo[i]] !== RES) continue;
+    const wgt = popFactor(w.intensity[bo[i]]);
+    n += wgt; h += lst[i] * wgt; f += fl[i] * wgt; comp += impact[i] * wgt;
   }
   n = n || 1;
   // Output: each factory produces more when more workers can reach it.
   let output = 0;
-  for (const F of w.factories) { const b = blockAtPoint(w, F.x, F.y); output += 0.5 + 0.5 * Math.min(1, (b >= 0 ? workers[b] : 0) / 40); }
-  const counts = new Array(7).fill(0); for (const v of w.func) counts[v]++;
-  counts[IND] = w.factories.length;          // industry now lives in point facilities
+  for (const F of plants) { const b = blockAtPoint(w, F.x, F.y); output += 0.5 + 0.5 * Math.min(1, (b >= 0 ? workers[b] : 0) / 800); }
+  let totalPop = 0; for (const v of pop) totalPop += v;
+  const counts = { factory: 0, park: 0, pond: 0, station: 0 };
+  for (const F of w.facilities) counts[F.type]++;
 
   // Changchun mode: how well does the model's heat pattern match the observed 2023 LST?
   let r = null;
@@ -419,7 +451,7 @@ function evaluate(w) {
     r = sab / Math.sqrt(saa * sbb);
   }
   const read = {
-    r,
+    r, pop: totalPop,
     lst: 26 + 10 * h / n,                       // rough °C mapping; calibrate with Rin's LST
     flood: f / n,
     commute: popSum ? commuteSum / popSum : 0,  // minutes
@@ -438,8 +470,12 @@ function evaluate(w) {
   // Fields for display on fixed scales (so changes stay visible between edits).
   const accCell = new Float32Array(N * N);
   for (let i = 0; i < N * N; i++) accCell[i] = bo[i] >= 0 ? Math.min(1, acc[bo[i]] / w.accRef) : 0;
+  // Per-block mean LST and flood (same °C mapping as the readout), for the block panel.
+  const blockLst = new Float32Array(B), blockFlood = new Float32Array(B), bn = new Float32Array(B);
+  for (let i = 0; i < N * N; i++) { const b = bo[i]; if (b < 0) continue; blockLst[b] += lst[i]; blockFlood[b] += fl[i]; bn[b]++; }
+  for (let b = 0; b < B; b++) { blockLst[b] = 26 + 10 * blockLst[b] / (bn[b] || 1); blockFlood[b] /= bn[b] || 1; }
   return {
-    cover, read, counts,
+    cover, read, counts, blockLst, blockFlood, pop,
     // Relative LST is shown as an anomaly: ±2 standard deviations around this world's starting
     // mean (fixed per world, so later edits still shift the colours). Same rule as the observed
     // LST in the reveal, so the two tiles compare like with like.

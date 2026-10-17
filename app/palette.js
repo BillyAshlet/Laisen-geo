@@ -5,6 +5,8 @@
 // Commercial uses a coral from LINEAR so it can't be confused with the ochre UI accent.
 const TYPE_COLORS = ['#FCEB8F', '#E39A7E', '#857F6E', '#ABE3A9', '#82BCC4', '#5D93CB', '#C3C9B5'];
 const TYPE_GLYPHS = ['⌂', '◆', '▲', '♣', '≈', '~', '·'];
+const FAC_GLYPHS = { select: '↖', factory: '▲', park: '♣', pond: '≈', station: '◉' };
+const FAC_COLORS = { select: '#EEE8DC', factory: '#857F6E', park: '#ABE3A9', pond: '#82BCC4', station: '#E39A7E' };
 const TYPE_INK = ['#2F2D28', '#2F2D28', '#FFFFFF', '#2F2D28', '#2F2D28', '#FFFFFF', '#2F2D28'];
 
 // Ramps, low → high.

@@ -160,4 +160,14 @@ figcaption {
 #log .act { cursor: pointer; }
 #log .act:hover { color: #fff; background: var(--dark-2); }
 .ask { width: 100%; margin-top: 16px; padding: 10px 12px; }
+.blockpanel { font-size: 12px; display: grid; gap: 8px; }
+.blockpanel .muted { color: var(--ink-2); }
+.blockpanel .head { display: flex; align-items: center; gap: 8px; }
+.blockpanel .sw { width: 12px; height: 12px; }
+.slider { display: grid; gap: 2px; }
+.slider .row { display: flex; justify-content: space-between; }
+.slider .row b { font: 500 12px var(--mono); }
+.slider input { width: 100%; accent-color: var(--ochre); }
+.slider input:disabled { opacity: .4; }
+.meter.bad .bar i { background: #C8541A; }
 .ask:disabled { opacity: .6; cursor: wait; }

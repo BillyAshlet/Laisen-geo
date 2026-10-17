@@ -1,29 +1,48 @@
-// Shell wiring: palette, block painting, small maps, readouts, trade-off, agent log.
+// Shell wiring: tools, block sliders, facilities, small maps, readouts, trade-off, agent log.
 const $ = s => document.querySelector(s);
 const worlds = { sandbox: makeWorld(), city: null };
 let world = worlds.sandbox;
 let fields;
-let tool = RES, roadLevel = 1, mode = 'sandbox';
+let tool = 'select', selected = -1, mode = 'sandbox';
 const history = [];
 const COVER_COLORS = ['#B8B2A3', '#ABE3A9', '#C3C9B5', '#5D93CB', '#82BCC4', '#F6F2EA', '#7A7466'];   // …, outside, road
 const ROAD_COLORS = ['#8E8676', '#8E8676', '#5A554B'];   // arterial, expressway
+const FAC_TYPES = ['factory', 'park', 'pond', 'station'];
 
-// ---------- Palette ----------
-// Zoning (block functions) and facilities (points) are separate tools. Industry is a facility.
-const ZONES = [RES, COM, PARK, WET, FARM, WATER];
-const FACTORY = 'factory';
-function buildPalette() {
-  $('#palette').innerHTML = ZONES.map(k =>
-    `<button class="block${k === tool ? ' on' : ''}${k === WATER ? ' locked' : ''}" data-k="${k}"
-       style="--c:${TYPE_COLORS[k]};color:${TYPE_INK[k]}"><span class="glyph">${TYPE_GLYPHS[k]}</span>${T().types[k]}</button>`).join('') +
-    `<h2>${T().facilitiesHead}</h2>
-     <button class="block${tool === FACTORY ? ' on' : ''}" data-k="${FACTORY}" style="--c:${TYPE_COLORS[IND]};color:#fff">
-       <span class="glyph">▲</span>${T().factory}</button>`;
-  $('#palette').querySelectorAll('.block').forEach(b => b.onclick = () => {
-    const k = b.dataset.k; if (+k === WATER) return;
-    tool = k === FACTORY ? FACTORY : +k; buildPalette();
-  });
+// ---------- Tools: select a block, or place a facility ----------
+function buildToolbar() {
+  $('#toolbar').innerHTML = ['select', ...FAC_TYPES].map(t =>
+    `<button class="block${t === tool ? ' on' : ''}" data-t="${t}" style="--c:${FAC_COLORS[t]};color:${t === 'factory' ? '#fff' : '#2F2D28'}">
+       <span class="glyph">${FAC_GLYPHS[t]}</span>${T().tools[t]}</button>`).join('') +
+    `<div class="hint">${T().toolHint}</div>`;
+  $('#toolbar').querySelectorAll('.block').forEach(b => b.onclick = () => { tool = b.dataset.t; buildToolbar(); });
 }
+
+// ---------- Block panel: the two control indicators of the selected block ----------
+function buildBlockPanel() {
+  const P = $('#blockPanel');
+  if (selected < 0) { P.innerHTML = `<div class="muted">${T().pickBlock}</div>`; return; }
+  const b = selected, u = world.use[b], ok = editable(world, b);
+  const head = `<div class="head"><span class="sw" style="background:${TYPE_COLORS[u]}"></span>${T().blockTitle(b, T().types[u])}</div>`;
+  if (!ok) { P.innerHTML = head + `<div class="muted">${T().fixedBlock}</div>`; return; }
+  const g = Math.round(world.green[b] * 100), k = Math.round(world.intensity[b] * 100);
+  P.innerHTML = head + `
+    <label class="slider"><span class="row"><span>${T().greenRatio}</span><b id="gv">${g}%</b></span>
+      <input id="gs" type="range" min="5" max="50" step="5" value="${g}"></label>
+    <label class="slider"><span class="row"><span>${T().intensity}</span><b id="kv">${k}</b></span>
+      <input id="ks" type="range" min="0" max="100" step="10" value="${k}">
+      <span class="row muted"><span>${T().intensityLow}</span><span>${T().intensityHigh}</span></span></label>`;
+  const hook = (id, key, label, show, fmtV) => {
+    const el = $(id);
+    el.oninput = () => { world[key][b] = +el.value / 100; world.edited[b] = 1; highlight = new Set(); $(show).textContent = fmtV(el.value); scheduleRender(); };
+    el.onchange = () => log(T().logSlider(b, label, fmtV(el.value)));
+  };
+  P.insertAdjacentHTML('beforeend', `<div class="muted" id="blockStats"></div>`);
+  hook('#gs', 'green', T().greenRatio, '#gv', v => v + '%');
+  hook('#ks', 'intensity', T().intensity, '#kv', v => v);
+}
+let pending = false;
+const scheduleRender = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; renderAll(); }); } };
 
 // ---------- Small maps ----------
 const LAYER_KEYS = ['lst', 'flood', 'access', 'impact'];
@@ -74,8 +93,9 @@ function sizeLayout() {
 }
 function sizeMap() { map.width = map.height = Math.round(map.clientWidth * devicePixelRatio); }
 
-// Drawn as a map, not as pixels: flat block fills, round-cornered water, vector roads on top
-// (the road lines cover the stepped block edges), factories as symbols with their nuisance radius.
+// Drawn as a map, not as pixels: flat block fills in the use colour, green cells as tree dots
+// (so the green ratio is visible), round-cornered water, vector roads on top (they cover the
+// stepped block edges), facilities as symbols with their reach.
 function drawMap() {
   const ctx = map.getContext('2d'), s = map.width, c = s / N, bo = world.base.blockOf;
   ctx.fillStyle = '#F6F2EA'; ctx.fillRect(0, 0, s, s);
@@ -83,21 +103,26 @@ function drawMap() {
     const x = (i % N) * c, y = ((i / N) | 0) * c, cv = fields.cover[i];
     if (cv === C_OUT) continue;
     if (bo[i] < 0) { if (!world.base.river[i]) { ctx.fillStyle = '#E4DED2'; ctx.fillRect(x, y, c + 0.5, c + 0.5); } continue; }
-    const f = world.func[bo[i]];
-    // Real Changchun blocks keep their observed green; edited and sandbox blocks are flat.
-    const real = world.real && !world.edited[bo[i]];
-    ctx.fillStyle = real && cv === C_GREEN ? COVER_COLORS[C_GREEN] : TYPE_COLORS[f];
+    ctx.fillStyle = TYPE_COLORS[world.use[bo[i]]];
     ctx.fillRect(x, y, c + 0.5, c + 0.5);
     if (world.locked[bo[i]] && ((i % N) - ((i / N) | 0)) % 5 === 0) { ctx.fillStyle = 'rgba(47,45,40,.18)'; ctx.fillRect(x, y, c + 0.5, c + 0.5); }
   }
-  // Water (river, lakes, wetland cells) as soft discs so edges read as shorelines.
+  // Green inside urban blocks: tree dots. Wetland: teal dots.
+  for (let i = 0; i < N * N; i++) {
+    const cv = fields.cover[i]; if (bo[i] < 0 || !isUrban(world.use[bo[i]])) continue;
+    if (cv !== C_GREEN && cv !== C_WET) continue;
+    ctx.fillStyle = cv === C_GREEN ? '#7FC67A' : '#5FA69E';
+    ctx.beginPath(); ctx.arc((i % N + 0.5) * c, (((i / N) | 0) + 0.5) * c, c * 0.48, 0, 2 * Math.PI); ctx.fill();
+  }
+  // Water (river, lakes) as soft discs so edges read as shorelines.
   ctx.fillStyle = TYPE_COLORS[WATER];
   for (let i = 0; i < N * N; i++) {
     if (fields.cover[i] !== C_WATER) continue;
     ctx.beginPath(); ctx.arc((i % N + 0.5) * c, (((i / N) | 0) + 0.5) * c, c * 0.78, 0, 2 * Math.PI); ctx.fill();
   }
   drawRoads(ctx, c);
-  drawFactories(ctx, c);
+  drawSelection(ctx, c);
+  drawFacilities(ctx, c);
   drawHighlight();
 }
 
@@ -123,13 +148,36 @@ function drawRoads(ctx, c) {
   }
 }
 
-function drawFactories(ctx, c) {
-  for (const F of world.factories) {
-    const x = F.x * c, y = F.y * c;
-    ctx.strokeStyle = 'rgba(133,127,110,.7)'; ctx.setLineDash([c * 0.6, c * 0.5]); ctx.lineWidth = Math.max(1, c * 0.15);
-    ctx.beginPath(); ctx.arc(x, y, FACTORY_NUISANCE_KM / CELL_KM * c, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = TYPE_COLORS[IND]; ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = Math.max(1, c * 0.18);
-    ctx.beginPath(); ctx.moveTo(x, y - c * 1.6); ctx.lineTo(x + c * 1.5, y + c * 1.1); ctx.lineTo(x - c * 1.5, y + c * 1.1); ctx.closePath(); ctx.fill(); ctx.stroke();
+// Outline the selected block: draw the cell edges where it meets anything else.
+function drawSelection(ctx, c) {
+  if (selected < 0) return;
+  const bo = world.base.blockOf;
+  ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = Math.max(2, c * 0.35); ctx.beginPath();
+  for (const i of world.base.blocks[selected].cells) {
+    const x = i % N, y = (i / N) | 0;
+    if (x + 1 >= N || bo[i + 1] !== selected) { ctx.moveTo((x + 1) * c, y * c); ctx.lineTo((x + 1) * c, (y + 1) * c); }
+    if (x - 1 < 0 || bo[i - 1] !== selected) { ctx.moveTo(x * c, y * c); ctx.lineTo(x * c, (y + 1) * c); }
+    if (y + 1 >= N || bo[i + N] !== selected) { ctx.moveTo(x * c, (y + 1) * c); ctx.lineTo((x + 1) * c, (y + 1) * c); }
+    if (y - 1 < 0 || bo[i - N] !== selected) { ctx.moveTo(x * c, y * c); ctx.lineTo((x + 1) * c, y * c); }
+  }
+  ctx.stroke();
+}
+
+// Symbols, each with a dashed ring for its reach (nuisance for factories, walk-in for stations).
+function drawFacilities(ctx, c) {
+  for (const F of world.facilities) {
+    const x = F.x * c, y = F.y * c, r = c * 1.5;
+    const ring = F.type === 'factory' ? FACTORY_NUISANCE_KM : F.type === 'station' ? STATION_KM : 0;
+    if (ring) {
+      ctx.strokeStyle = 'rgba(80,75,66,.75)'; ctx.setLineDash([c * 0.6, c * 0.5]); ctx.lineWidth = Math.max(1, c * 0.15);
+      ctx.beginPath(); ctx.arc(x, y, ring / CELL_KM * c, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.fillStyle = FAC_COLORS[F.type]; ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = Math.max(1, c * 0.18);
+    ctx.beginPath();
+    if (F.type === 'factory') { ctx.moveTo(x, y - r * 1.1); ctx.lineTo(x + r, y + r * 0.7); ctx.lineTo(x - r, y + r * 0.7); ctx.closePath(); }
+    else if (F.type === 'station') { ctx.rect(x - r * 0.75, y - r * 0.75, r * 1.5, r * 1.5); }
+    else ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.fill(); ctx.stroke();
   }
 }
 
@@ -147,11 +195,13 @@ function drawReadouts() {
     vals.forEach((v, k) => { const X = k / (vals.length - 1) * (W - 4) + 2, Y = H - 4 - (v - lo) / ((hi - lo) || 1) * (H - 8); k ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
     ctx.stroke();
   });
-  const dev = world.nb - fields.counts[FARM];
-  const rows = [[fields.counts[RES], world.target.res], [fields.counts[IND], world.target.ind], [dev, world.nb]];
-  $('#constraints').innerHTML = rows.map(([v, max], k) =>
-    `<div class="meter${k < 2 && v >= max ? ' ok' : ''}"><div class="row"><span>${T().constraints[k]}</span><b>${v} / ${max}</b></div>
-     <div class="bar"><i style="width:${Math.min(100, v / max * 100)}%"></i></div></div>`).join('');
+  // Housing constraint: everyone must stay housed. Facilities: counts by type.
+  const share = fields.read.pop / (world.popTarget || 1);
+  const counts = FAC_TYPES.map(t => `${FAC_GLYPHS[t]} ${fields.counts[t]}`).join('　');
+  $('#constraints').innerHTML = `
+    <div class="meter ${share >= 0.98 ? 'ok' : 'bad'}"><div class="row"><span>${T().popLabel}</span><b>${Math.round(share * 100)}%</b></div>
+      <div class="bar"><i style="width:${Math.min(100, share * 100)}%"></i></div></div>
+    <div class="meter"><div class="row"><span>${T().facLabel}</span><b>${counts}</b></div></div>`;
 }
 
 // ---------- Trade-off triangle ----------
@@ -182,15 +232,15 @@ function log(msg, cls = '', suggestion = null) {
   if (suggestion) {                       // clicking a suggestion applies it
     li.classList.add('act');
     li.onclick = () => {
-      if (suggestion.kind === 'move') {
-        const F = world.factories[suggestion.k]; F.x = suggestion.to.x; F.y = suggestion.to.y;
-        highlight = new Set(); log(T().logFactoryMoved(suggestion.k + 1, suggestion.b), 'good');
+      const c = suggestion;
+      if (c.kind === 'move') {
+        const F = world.facilities[c.k]; if (F) { F.x = c.to.x; F.y = c.to.y; }
+        log(T().logFacMoved(T().tools[c.type], c.b), 'good');
       } else {
-        const { a, b, fa, fb } = suggestion;
-        world.func[a] = fb; world.func[b] = fa; world.edited[a] = world.edited[b] = 1; highlight = new Set();
-        log(T().logApplied(a, b), 'good');
+        world[c.key][c.b] = c.to; world.edited[c.b] = 1; selected = c.b;
+        log(T().logApplied, 'good');
       }
-      renderAll();
+      highlight = new Set(); buildBlockPanel(); renderAll();
     };
   }
   $('#log').appendChild(li); $('#log').scrollTop = 1e9;
@@ -208,13 +258,13 @@ function drawHighlight() {
 $('#ask').onclick = async () => {
   $('#ask').disabled = true;
   const picks = await runAgent(world, log);
-  highlight = new Set(picks.flatMap(p => p.kind === 'move' ? [p.b, blockAtPoint(world, p.from.x, p.from.y)] : [p.a, p.b]));
+  highlight = new Set(picks.flatMap(p => p.kind === 'move' ? [p.b, blockAtPoint(world, p.from.x, p.from.y)] : [p.b]));
   drawMap();
   $('#ask').disabled = false;
 };
 
 // ---------- Render all ----------
-let lastMs = 0;
+let lastMs = 0, warnedPop = false;
 function renderAll() {
   const t0 = performance.now();
   fields = evaluate(world);
@@ -225,55 +275,44 @@ function renderAll() {
   $('#nm-lst').textContent = revealed ? T().layerObserved : T().layers[0];
   $('#nm-lst').closest('figure').classList.toggle('observed', revealed);
   drawReadouts(); drawTrade();
+  if (selected >= 0 && $('#blockStats')) $('#blockStats').textContent = T().blockStats(fields.blockLst[selected], fields.blockFlood[selected], fields.pop[selected]);
+  const short = fields.read.pop < world.popTarget * 0.98;
+  if (short && !warnedPop) log(T().logPopShort, 'warn');
+  warnedPop = short;
 }
 
-// ---------- Painting (one block at a time) ----------
-let painting = false, lastBlock = -1;
-function blockAt(e) {
+// ---------- Map clicks: select a block, or place / remove a facility ----------
+function cellAt(e) {
   const r = map.getBoundingClientRect();
-  const x = Math.floor((e.clientX - r.left) / r.width * N), y = Math.floor((e.clientY - r.top) / r.height * N);
-  if (x < 0 || y < 0 || x >= N || y >= N) return -1;
-  return world.base.blockOf[y * N + x];      // -1 on roads, the river and outside
+  return [(e.clientX - r.left) / r.width * N, (e.clientY - r.top) / r.height * N];
 }
-function placeFactory(e) {
-  const r = map.getBoundingClientRect();
-  const x = (e.clientX - r.left) / r.width * N, y = (e.clientY - r.top) / r.height * N;
-  const near = world.factories.findIndex(F => Math.hypot(F.x - x, F.y - y) < 2.5);
-  if (near >= 0) { world.factories.splice(near, 1); log(T().logFactoryRemoved); }
+map.addEventListener('pointerdown', e => {
+  const [x, y] = cellAt(e);
+  if (x < 0 || y < 0 || x >= N || y >= N) return;
+  if (tool === 'select') {
+    selected = world.base.blockOf[Math.floor(y) * N + Math.floor(x)];
+    buildBlockPanel(); drawMap();
+    if (selected >= 0 && $('#blockStats')) $('#blockStats').textContent = T().blockStats(fields.blockLst[selected], fields.blockFlood[selected], fields.pop[selected]);
+    return;
+  }
+  const near = world.facilities.findIndex(F => Math.hypot(F.x - x, F.y - y) < 2.5);
+  if (near >= 0) { const [F] = world.facilities.splice(near, 1); log(T().logFacRemoved(T().tools[F.type])); }
   else {
     const i = Math.floor(y) * N + Math.floor(x);
     if (world.base.out[i] || world.base.river[i]) return;
     const b = blockAtPoint(world, x, y);
     if (b >= 0 && world.locked[b]) { log(T().logLocked(b), 'warn'); return; }
-    world.factories.push({ x, y }); log(T().logFactoryPlaced(world.factories.length, b));
+    world.facilities.push({ type: tool, x, y }); log(T().logFacPlaced(T().tools[tool], b));
   }
   highlight = new Set(); renderAll();
-}
-function paintAt(e) {
-  const b = blockAt(e); if (b < 0 || b === lastBlock) return; lastBlock = b;
-  if (world.locked[b]) { log(T().logLocked(b), 'warn'); return; }
-  if (world.func[b] === tool && world.road[b] === roadLevel) return;
-  world.func[b] = tool; world.road[b] = roadLevel; world.edited[b] = 1; highlight = new Set();
-  log(T().logPlace(T().types[tool], b));
-  renderAll();
-}
-map.addEventListener('pointerdown', e => {
-  if (tool === FACTORY) { placeFactory(e); return; }   // factories: one click, one plant (click again to remove)
-  painting = true; lastBlock = -1; map.setPointerCapture(e.pointerId); paintAt(e);
 });
-map.addEventListener('pointermove', e => painting && tool !== FACTORY && paintAt(e));
-map.addEventListener('pointerup', () => painting = false);
 
 // ---------- Controls ----------
-document.querySelectorAll('#road .block').forEach(b => b.onclick = () => {
-  roadLevel = +b.dataset.road;
-  document.querySelectorAll('#road .block').forEach(o => o.classList.toggle('on', o === b));
-});
 document.querySelectorAll('#mode .block').forEach(b => b.onclick = () => {
   mode = b.dataset.mode;
   document.querySelectorAll('#mode .block').forEach(o => o.classList.toggle('on', o === b));
   if (mode === 'city' && !worlds.city) worlds.city = makeCityWorld();
-  world = worlds[mode]; highlight = new Set(); history.length = 0;
+  world = worlds[mode]; highlight = new Set(); history.length = 0; selected = -1; buildBlockPanel();
   if (mode !== 'city' && revealed) { revealed = false; $('#reveal').textContent = T().reveal; }
   log(T().logMode(b.textContent, world.nb));
   renderAll();
@@ -305,11 +344,11 @@ $('#reveal').onclick = () => {
 $('#lang').onclick = () => {
   LANG = LANG === 'zh' ? 'en' : 'zh';
   $('#lang').textContent = LANG === 'zh' ? 'EN' : '中文';
-  applyStrings(); buildPalette(); buildSmalls(); renderAll(); log(T().logLang);
+  applyStrings(); buildToolbar(); buildBlockPanel(); buildSmalls(); renderAll(); log(T().logLang);
   if (revealed) $('#reveal').textContent = T().revealBack;
 };
 addEventListener('resize', () => { sizeLayout(); sizeMap(); drawMap(); drawTrade(); });
 
 // ---------- Boot ----------
-applyStrings(); buildPalette(); buildSmalls(); sizeLayout(); sizeMap(); renderAll();
+applyStrings(); buildToolbar(); buildBlockPanel(); buildSmalls(); sizeLayout(); sizeMap(); renderAll();
 log(T().logBoot(world.nb)); log(T().logEngine(lastMs.toFixed(0)));
