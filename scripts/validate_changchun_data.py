@@ -1,4 +1,4 @@
-"""Validate the committed Changchun GIS handoff without modifying any files."""
+"""Check the Changchun boundary, road features and 200 m raster grid."""
 from pathlib import Path
 from collections import Counter
 import argparse
