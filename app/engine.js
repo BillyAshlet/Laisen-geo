@@ -67,7 +67,9 @@ function siteCheck(w, type, x, y) {
   return null;
 }
 const FACTORY_NUISANCE_KM = 1.5;   // pollution / noise decay distance
-const STATION_KM = 2, TRANSIT_KMH = 60, TRANSIT_WAIT = 2;   // walk-in radius, line speed, wait (min): a metro line
+// A metro-like line: stops reach blocks within 2 km by a feeder leg (bus / e-bike), then 60 km/h.
+// With peak-hour road speeds this makes transit win for trips over ~4 km and lose for short ones.
+const STATION_KM = 2, FEEDER_KMH = 30, TRANSIT_KMH = 60, TRANSIT_WAIT = 2;
 
 const hash = i => { const s = Math.sin(i * 12.9898 + 4.1) * 43758.5453; return s - Math.floor(s); };
 
@@ -383,7 +385,7 @@ function flood(w, cover) {
 
 // 3. Accessibility (Hansen) on the street-block graph. Travel time between
 //    neighbouring blocks = centroid distance / speed; crossing the river is slow.
-const SPEED = [15, 25, 40];   // km/h for low / mid / high road density
+const SPEED = [12, 20, 32];   // km/h for low / mid / high road density (peak-hour speeds)
 const BETA = 15;              // minutes; distance-decay of the gravity model
 function travelTimes(w) {
   const B = w.nb, blocks = w.base.blocks;
@@ -437,13 +439,23 @@ function evaluate(w) {
   }
   for (const F of w.facilities) if (F.type === 'factory') { const b = blockAtPoint(w, F.x, F.y); if (b >= 0) jobs[b] += FACTORY_JOBS; }
 
-  // Transit: blocks within walking distance of a station are linked at line speed.
-  const near = blocks.map(Bk => w.facilities.some(F => F.type === 'station' && Math.hypot(Bk.cx - F.x, Bk.cy - F.y) * CELL_KM < STATION_KM));
-  const tt = (i, j) => {
-    let t = road[i * B + j];
-    if (near[i] && near[j]) t = Math.min(t, TRANSIT_WAIT + Math.hypot(blocks[i].cx - blocks[j].cx, blocks[i].cy - blocks[j].cy) * CELL_KM / TRANSIT_KMH * 60);
-    return t;
+  // Transit: each block within reach of a stop uses its nearest one. A transit trip is
+  // feeder leg to the stop + wait + ride between stops + feeder leg to the destination;
+  // a trip takes transit only when that beats the road. Trips then visibly gather at stops.
+  const stations = w.facilities.filter(F => F.type === 'station');
+  const nearStop = blocks.map(Bk => {
+    let best = -1, km = Infinity;
+    stations.forEach((F, s) => { const d = Math.hypot(Bk.cx + 0.5 - F.x, Bk.cy + 0.5 - F.y) * CELL_KM; if (d < STATION_KM && d < km) { best = s; km = d; } });
+    return [best, km];
+  });
+  const transitTime = (i, j) => {
+    const [si, ki] = nearStop[i], [sj, kj] = nearStop[j];
+    if (si < 0 || sj < 0 || si === sj) return Infinity;
+    const ride = Math.hypot(stations[si].x - stations[sj].x, stations[si].y - stations[sj].y) * CELL_KM;
+    return (ki + kj) / FEEDER_KMH * 60 + TRANSIT_WAIT + ride / TRANSIT_KMH * 60;
   };
+  const tt = (i, j) => Math.min(road[i * B + j], transitTime(i, j));
+  let tripsAll = 0, tripsTransit = 0;
 
   // Hansen accessibility to jobs; mean commute from gravity shares.
   const acc = new Float32Array(B), workers = new Float32Array(B), commuteB = new Float32Array(B), flows = [];
@@ -459,9 +471,11 @@ function evaluate(w) {
     // Commuting flows (gravity shares) for the flow-line map.
     if (pop[i] > 0 && A > 0) for (let j = 0; j < B; j++) {
       if (j === i || !jobs[j]) continue;
-      const t = tt(i, j); if (!isFinite(t)) continue;
-      const v = pop[i] * jobs[j] * Math.exp(-t / BETA) / A;
-      if (v > 1) flows.push([i, j, v]);
+      const tr = transitTime(i, j), t = Math.min(road[i * B + j], tr); if (!isFinite(t)) continue;
+      const v = pop[i] * jobs[j] * Math.exp(-t / BETA) / A, byTransit = tr <= t;
+      tripsAll += v; if (byTransit) tripsTransit += v;
+      // [home block, job block, trips, stop near home, stop near job] (stops −1 when by road)
+      if (v > 1) flows.push(byTransit ? [i, j, v, nearStop[i][0], nearStop[j][0]] : [i, j, v, -1, -1]);
     }
     if (pop[i] > 0 && A > 0) { commuteSum += pop[i] * tw / A; popSum += pop[i]; }
   }
@@ -507,6 +521,7 @@ function evaluate(w) {
   }
   const read = {
     r, pop: totalPop, jobs: totalJobs,
+    transitShare: tripsAll ? tripsTransit / tripsAll : 0,
     jobsShare: totalJobs / (JOBS_GOAL * totalPop || 1),   // 100% = the jobs goal is met
     lst: 26 + 10 * h / n,                       // rough °C mapping; calibrate with Rin's LST
     flood: f / n,
@@ -544,7 +559,9 @@ function evaluate(w) {
     flood: fl.map(v => Math.min(1, Math.sqrt(v / 40))),
     thru, caught,
     commute: commuteCell, density: densCell, commuteB,
-    flows: flows.sort((p, q) => q[2] - p[2]).slice(0, 90),
+    flows: [...flows.filter(f => f[3] < 0).sort((p, q) => q[2] - p[2]).slice(0, 80),
+            ...flows.filter(f => f[3] >= 0).sort((p, q) => q[2] - p[2]).slice(0, 60)],
+    stations,
     impact: impact.map(v => Math.min(1, v / 2)),
   };
 }

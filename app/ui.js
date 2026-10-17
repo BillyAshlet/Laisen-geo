@@ -122,16 +122,31 @@ function drawLayer(canvas, key, f, ramp) {
   const S = canvas.width, ctx = canvas.getContext('2d'), c = S / N, B = world.base.blocks;
   if (key === 'commute') {
     drawField(canvas, f.commute.map(v => v * 0.55), ramp);           // pale underlay: minutes
-    const vmax = f.flows.length ? f.flows[0][2] : 1;
+    const vmax = Math.max(1, ...f.flows.map(x => x[2]));
+    const P = b => [(B[b].cx + 0.5) * c, (B[b].cy + 0.5) * c], SP = s => [f.stations[s].x * c, f.stations[s].y * c];
+    const width = v => Math.max(1, c * 2.2 * Math.sqrt(v / vmax));
     ctx.lineCap = 'round';
-    for (const [i, j, v] of [...f.flows].reverse()) {
+    // Road trips: curved lines straight from home block to job block.
+    for (const [i, j, v, si] of [...f.flows].reverse()) {
+      if (si >= 0) continue;
       const a = B[i], b = B[j], mx = (a.cx + b.cx) / 2 - (b.cy - a.cy) * 0.18, my = (a.cy + b.cy) / 2 + (b.cx - a.cx) * 0.18;
-      ctx.strokeStyle = `rgba(23,78,90,${0.25 + 0.6 * v / vmax})`; ctx.lineWidth = Math.max(1, c * 2.2 * Math.sqrt(v / vmax));
-      ctx.beginPath(); ctx.moveTo((a.cx + 0.5) * c, (a.cy + 0.5) * c); ctx.quadraticCurveTo((mx + 0.5) * c, (my + 0.5) * c, (b.cx + 0.5) * c, (b.cy + 0.5) * c); ctx.stroke();
+      ctx.strokeStyle = `rgba(23,78,90,${0.2 + 0.5 * v / vmax})`; ctx.lineWidth = width(v);
+      ctx.beginPath(); ctx.moveTo(...P(i)); ctx.quadraticCurveTo((mx + 0.5) * c, (my + 0.5) * c, ...P(j)); ctx.stroke();
     }
+    // Transit trips: home → stop (feeder), stop → stop (the line, summed), stop → job (feeder).
+    const feeder = new Map(), trunk = new Map(), add = (m, k, v) => m.set(k, (m.get(k) || 0) + v);
+    for (const [i, j, v, si, sj] of f.flows) {
+      if (si < 0) continue;
+      add(feeder, i + ':' + si, v); add(feeder, j + ':' + sj, v); add(trunk, Math.min(si, sj) + ':' + Math.max(si, sj), v);
+    }
+    ctx.strokeStyle = 'rgba(195,74,59,.55)';
+    for (const [k, v] of feeder) { const [b, st] = k.split(':').map(Number); ctx.lineWidth = Math.max(1, width(v) * 0.7); ctx.beginPath(); ctx.moveTo(...P(b)); ctx.lineTo(...SP(st)); ctx.stroke(); }
+    ctx.strokeStyle = 'rgba(140,33,49,.9)';
+    for (const [k, v] of trunk) { const [a, b] = k.split(':').map(Number); ctx.lineWidth = Math.max(2, width(v) * 1.4); ctx.beginPath(); ctx.moveTo(...SP(a)); ctx.lineTo(...SP(b)); ctx.stroke(); }
     for (const F of world.facilities) if (F.type === 'factory' || F.type === 'station') {      // where the flows go
       ctx.fillStyle = FAC_COLORS[F.type]; ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(F.x * c, F.y * c, Math.max(3, c * 1.4), 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+      const r = Math.max(3, c * 1.4);
+      ctx.beginPath(); F.type === 'station' ? ctx.rect(F.x * c - r, F.y * c - r, 2 * r, 2 * r) : ctx.arc(F.x * c, F.y * c, r, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
     }
     return;
   }
@@ -219,6 +234,7 @@ function drawMap() {
   drawHalos(ctx, c);
   drawRoads(ctx, c);
   drawSelection(ctx, c);
+  drawTransitLine(ctx, c);
   drawFacilities(ctx, c);
   drawDiagRings(ctx, c);
   drawHighlight();
@@ -286,6 +302,16 @@ function drawSelection(ctx, c) {
     if (y - 1 < 0 || bo[i - N] !== selected) { ctx.moveTo(x * c, y * c); ctx.lineTo((x + 1) * c, y * c); }
   }
   ctx.stroke();
+}
+
+// The transit line: stops joined in the order they were placed.
+function drawTransitLine(ctx, c) {
+  const st = world.facilities.filter(F => F.type === 'station'); if (st.length < 2) return;
+  ctx.save(); ctx.lineCap = ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#F6F2EA'; ctx.lineWidth = c * 1.4; ctx.beginPath(); st.forEach((F, k) => ctx[k ? 'lineTo' : 'moveTo'](F.x * c, F.y * c)); ctx.stroke();
+  ctx.strokeStyle = '#8C2131'; ctx.lineWidth = c * 0.8; ctx.setLineDash([c * 1.6, c * 0.6]);
+  ctx.beginPath(); st.forEach((F, k) => ctx[k ? 'lineTo' : 'moveTo'](F.x * c, F.y * c)); ctx.stroke();
+  ctx.restore();
 }
 
 // Symbols, each with a dashed ring for its reach (nuisance for factories, walk-in for stations).
@@ -535,9 +561,8 @@ async function openAgentView() {
   // Suggest: the chosen places circled on all four maps
   avStep(picks.length ? L.av.s4 : L.av.none);
   const where = picks.map(p => p.b).filter(b => b >= 0);
-  for (const [key, k, problems] of stages) {
+  for (const [key, k] of stages) {
     drawLayer($('#av-' + key), key, fields, LAYER_RAMPS[k]);
-    circleBlocks($('#av-' + key), problems, '#8E8676', { dashed: true, width: 2, labels: problems.map(() => '') });   // this map's problems
     circleBlocks($('#av-' + key), where, '#2F2D28', { labels: where.map((_, n) => L.av.pick(n + 1)) });              // the suggestions
   }
   picks.forEach((c, k) => {
@@ -611,6 +636,7 @@ map.addEventListener('pointerdown', e => {
   }
   const before = fields.read;
   highlight = new Set(); renderAll(); buildToolbar(); toast(x, y, before);
+  if (tool === 'station') log(T().logTransit(Math.round(fields.read.transitShare * 100), fields.read.commute.toFixed(1)));
 });
 
 // ---------- Controls ----------
