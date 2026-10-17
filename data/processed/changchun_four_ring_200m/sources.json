@@ -1,0 +1,48 @@
+{
+  "prepared_by": "Rin (GitHub: Cola2233)",
+  "prepared_date": "2026-10-17",
+  "boundary": {
+    "source": "author-provided CC_5Ring.gdb / T4_huan",
+    "area_km2": 299.3858726984876,
+    "method": "direct geometry export; no buffer or simplification"
+  },
+  "WorldCover": {
+    "product": "ESA WorldCover 2021 v200",
+    "resampling": "mode",
+    "license": "CC-BY-4.0",
+    "url": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N42E123_Map.tif"
+  },
+  "elevation": {
+    "product": "Copernicus GLO-30 DSM",
+    "resampling": "average",
+    "units": "m",
+    "url": "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N43_00_E125_00_DEM/Copernicus_DSM_COG_10_N43_00_E125_00_DEM.tif",
+    "license_reference": "https://registry.opendata.aws/copernicus-dem/"
+  },
+  "LST": {
+    "source": "user-provided ChangchunFull_2023.tif, band1",
+    "year_basis": "filename, acquisition dates not embedded",
+    "units": "degree Celsius",
+    "resampling": "average",
+    "qa": "finite source values retained; no additional cloud QA or temperature-threshold rejection",
+    "rights": "source data rights retained; no new license asserted"
+  },
+  "roads": {
+    "source": "OpenStreetMap contributors via Geofabrik Jilin",
+    "download_date": "2026-10-17",
+    "url": "https://download.geofabrik.de/asia/china/jilin-latest.osm.pbf",
+    "license": "ODbL-1.0",
+    "expressways": [
+      "motorway",
+      "motorway_link",
+      "trunk",
+      "trunk_link"
+    ],
+    "arterials": [
+      "primary",
+      "primary_link"
+    ]
+  },
+  "native_mask": "mask source pixels by boundary before resampling; mask destination pixel centres outside boundary",
+  "packaging": "GeoJSON whitespace compacted; raster source_path tags removed; arrays, coordinates and other source fields unchanged"
+}

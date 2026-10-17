@@ -1,0 +1,72 @@
+{
+  "status": "passed",
+  "raster_checks": [
+    {
+      "file": "DEM_Copernicus_DSM_200m.tif",
+      "same_grid": true,
+      "outside_is_nodata": true,
+      "inside_cells": 7486,
+      "valid_cells": 7486,
+      "coverage_fraction": 1.0,
+      "min": 185.0,
+      "max": 246.8033447265625
+    },
+    {
+      "file": "LST_2023_200m.tif",
+      "same_grid": true,
+      "outside_is_nodata": true,
+      "inside_cells": 7486,
+      "valid_cells": 7486,
+      "coverage_fraction": 1.0,
+      "min": 24.794912338256836,
+      "max": 57.54167175292969
+    },
+    {
+      "file": "WorldCover_2021_200m.tif",
+      "same_grid": true,
+      "outside_is_nodata": true,
+      "inside_cells": 7486,
+      "valid_cells": 7486,
+      "coverage_fraction": 1.0,
+      "min": 10.0,
+      "max": 90.0
+    }
+  ],
+  "road_checks": [
+    {
+      "file": "expressways.geojson",
+      "feature_count": 824,
+      "highway_counts": {
+        "trunk": 365,
+        "trunk_link": 459
+      },
+      "total_length_km": 390.03566908886836,
+      "inside_boundary": true
+    },
+    {
+      "file": "arterials.geojson",
+      "feature_count": 796,
+      "highway_counts": {
+        "primary": 525,
+        "primary_link": 271
+      },
+      "total_length_km": 533.9481882134221,
+      "inside_boundary": true
+    }
+  ],
+  "grid": {
+    "crs": "EPSG:32651",
+    "height": 99,
+    "width": 103,
+    "transform": [
+      200.0,
+      0.0,
+      674600.0,
+      0.0,
+      -200.0,
+      4872000.0
+    ],
+    "resolution_m": 200
+  },
+  "vector_area_km2": 299.38587269849586
+}

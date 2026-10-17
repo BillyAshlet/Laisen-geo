@@ -1,0 +1,2 @@
+# Preserve exact dataset bytes so SHA-256 checks work on every platform.
+data/processed/changchun_four_ring_200m/** -text
