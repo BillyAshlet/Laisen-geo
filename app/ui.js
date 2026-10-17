@@ -153,9 +153,19 @@ function drawLayer(canvas, key, f, ramp) {
 }
 
 // Difference map: after − before on the same fixed scale, blue = went down, red = went up.
+// Unchanged places are neutral paper (not the ramp's pale middle, which reads as a colour),
+// and the road network is drawn faintly so the map is recognisably the same city.
 function drawDiff(canvas, before, after, gain = 2.5) {
-  const diff = after.map((v, i) => 0.5 + gain * (v - before[i]));
-  drawField(canvas, diff, 'diverging', 11);
+  const S = canvas.width, ctx = canvas.getContext('2d'), img = ctx.createImageData(S, S);
+  for (let py = 0; py < S; py++) for (let px = 0; px < S; px++) {
+    const i = Math.floor(py / S * N) * N + Math.floor(px / S * N), cv = fields.cover[i];
+    const d = after[i] - before[i];
+    const [r, g, b] = cv === C_OUT ? [246, 242, 234] : cv === C_WATER ? [190, 210, 230]
+      : Math.abs(d) < 0.01 ? [238, 232, 220] : rampAt('diverging', 0.5 + gain * d);
+    img.data.set([r, g, b, 255], (py * S + px) * 4);
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.save(); ctx.globalAlpha = 0.45; drawRoads(ctx, S / N); ctx.restore();
 }
 
 // ---------- Main map ----------
@@ -388,13 +398,27 @@ function showChangeView(before, after, c) {
   $('#cvGrid').innerHTML = rows.map(([k, name, txt, v]) => `<figure class="neatline"><canvas id="cv-${k}" width="360" height="360"></canvas>
     <figcaption><span>${name} · ${L.cv.diff}</span><span class="d ${v > 0 ? 'up' : v < 0 ? 'down' : ''}">${txt}</span>
     <span class="legend">${L.cv.down}<i style="background:${rampCss('diverging')}"></i>${L.cv.up}</span></figcaption></figure>`).join('');
-  const at = c.kind === 'slider' ? world.base.blocks[c.b] : { cx: c.to.x - 0.5, cy: c.to.y - 0.5, cells: { length: 40 } };
+  // Where the change happened: the block for a slider; new site (and old site, for a move) for a facility.
+  const marks = c.kind === 'slider'
+    ? [{ x: world.base.blocks[c.b].cx + 0.5, y: world.base.blocks[c.b].cy + 0.5, r: Math.sqrt(world.base.blocks[c.b].cells.length / Math.PI) + 2, label: L.cv.here, solid: true }]
+    : [{ x: c.to.x, y: c.to.y, r: 5, label: L.cv.to, solid: true }, ...(c.kind === 'move' ? [{ x: c.from.x, y: c.from.y, r: 5, label: L.cv.from, solid: false }] : [])];
   for (const [k] of rows) {
     const canvas = $('#cv-' + k);
     drawDiff(canvas, before[k], after[k]);
-    const ctx = canvas.getContext('2d'), S = canvas.width / N, r = Math.sqrt(at.cells.length / Math.PI) * S + 12;
-    ctx.strokeStyle = '#2F2D28'; ctx.lineWidth = 3; ctx.setLineDash([8, 5]);
-    ctx.beginPath(); ctx.arc((at.cx + 0.5) * S, (at.cy + 0.5) * S, r, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    const ctx = canvas.getContext('2d'), S = canvas.width / N;
+    ctx.font = '600 13px "IBM Plex Mono", monospace';
+    for (const m of marks) {
+      ctx.strokeStyle = ctx.fillStyle = '#2F2D28'; ctx.lineWidth = 2.5; ctx.setLineDash(m.solid ? [] : [6, 4]);
+      ctx.beginPath(); ctx.arc(m.x * S, m.y * S, m.r * S, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillText(m.label, m.x * S + m.r * S * 0.75, m.y * S - m.r * S * 0.75 - 2);
+    }
+    if (marks.length === 2) {          // an arrow from the old site to the new one
+      const [a, b] = [marks[1], marks[0]], dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+      const sx = (a.x + dx / len * a.r) * S, sy = (a.y + dy / len * a.r) * S, ex = (b.x - dx / len * b.r) * S, ey = (b.y - dy / len * b.r) * S;
+      ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+      const ang = Math.atan2(ey - sy, ex - sx);
+      ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex - 9 * Math.cos(ang - 0.4), ey - 9 * Math.sin(ang - 0.4)); ctx.lineTo(ex - 9 * Math.cos(ang + 0.4), ey - 9 * Math.sin(ang + 0.4)); ctx.closePath(); ctx.fill();
+    }
   }
 }
 $('#cvBack').onclick = () => { $('#cv').classList.add('hidden'); drawMap(); };
@@ -436,14 +460,20 @@ function drawHighlight() {
 // 1 perceive (big LST, hottest homes circled) → 2 diagnose (big flood map, wettest circled)
 // → 3 compute (every option plotted live: heat change vs flood change) → 4 suggest (cards).
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-function circleBlocks(canvas, blocks, color) {
+// Rings around blocks. Problem rings (diagnosis) are thin and dashed; suggestion rings are solid
+// and labelled, so after the agent finishes both stay readable on the same map.
+function circleBlocks(canvas, blocks, color, { dashed = false, width = 3, labels = null } = {}) {
   const ctx = canvas.getContext('2d'), S = canvas.width / N;
-  ctx.lineWidth = 3; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.font = '600 16px "IBM Plex Mono", monospace';
+  ctx.lineWidth = width; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.font = '600 16px "IBM Plex Mono", monospace';
+  ctx.setLineDash(dashed ? [6, 4] : []);
   blocks.forEach((b, k) => {
-    const B = world.base.blocks[b], r = Math.sqrt(B.cells.length / Math.PI) * S + 10;
+    const B = world.base.blocks[b]; if (!B) return;
+    const r = Math.sqrt(B.cells.length / Math.PI) * S + 10;
     ctx.beginPath(); ctx.arc((B.cx + 0.5) * S, (B.cy + 0.5) * S, r, 0, 2 * Math.PI); ctx.stroke();
-    ctx.fillText(String(k + 1), (B.cx + 0.5) * S + r * 0.75, (B.cy + 0.5) * S - r * 0.75);
+    const lab = labels ? labels[k] : String(k + 1);
+    if (lab) ctx.fillText(lab, (B.cx + 0.5) * S + r * 0.75, (B.cy + 0.5) * S - r * 0.75);
   });
+  ctx.setLineDash([]);
 }
 function avStep(text) {
   $('#avSteps').querySelectorAll('li').forEach(li => li.classList.remove('now'));
@@ -505,7 +535,11 @@ async function openAgentView() {
   // Suggest: the chosen places circled on all four maps
   avStep(picks.length ? L.av.s4 : L.av.none);
   const where = picks.map(p => p.b).filter(b => b >= 0);
-  for (const [key, k] of stages) { drawLayer($('#av-' + key), key, fields, LAYER_RAMPS[k]); circleBlocks($('#av-' + key), where, '#2F2D28'); }
+  for (const [key, k, problems] of stages) {
+    drawLayer($('#av-' + key), key, fields, LAYER_RAMPS[k]);
+    circleBlocks($('#av-' + key), problems, '#8E8676', { dashed: true, width: 2, labels: problems.map(() => '') });   // this map's problems
+    circleBlocks($('#av-' + key), where, '#2F2D28', { labels: where.map((_, n) => L.av.pick(n + 1)) });              // the suggestions
+  }
   picks.forEach((c, k) => {
     scatterDot(c, true, base.read, true);
     const card = document.createElement('div'); card.className = 'card';
